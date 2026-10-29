@@ -78559,7 +78559,7 @@ index 2b2977e4..a5d95078 100644
  
  #pragma clang diagnostic push
  #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-@@ -108,6 +118,19 @@ typedef enum {
+@@ -108,6 +118,19 @@ @interface RMIntroViewController () <UIGestureRecognizerDelegate>
      UIView *_startButton;
      
      bool _loadedView;
@@ -78579,7 +78579,7 @@ index 2b2977e4..a5d95078 100644
  }
  @end
  
-@@ -163,11 +186,15 @@ typedef enum {
+@@ -163,11 +186,15 @@ - (instancetype)initWithBackgroundColor:(UIColor *)backgroundColor primaryColor:
          _headlines = @[ _englishStrings[@"Tour.Title1"], _englishStrings[@"Tour.Title2"],  _englishStrings[@"Tour.Title6"], _englishStrings[@"Tour.Title3"], _englishStrings[@"Tour.Title4"], _englishStrings[@"Tour.Title5"]];
          _descriptions = @[_englishStrings[@"Tour.Text1"], _englishStrings[@"Tour.Text2"],  _englishStrings[@"Tour.Text6"], _englishStrings[@"Tour.Text3"], _englishStrings[@"Tour.Text4"], _englishStrings[@"Tour.Text5"]];
          
@@ -78595,7 +78595,7 @@ index 2b2977e4..a5d95078 100644
          }];
          
          _willEnterBackgroundObserver = [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationWillEnterForegroundNotification object:nil queue:nil usingBlock:^(__unused NSNotification *notification)
-@@ -175,6 +202,9 @@ typedef enum {
+@@ -175,6 +202,9 @@ - (instancetype)initWithBackgroundColor:(UIColor *)backgroundColor primaryColor:
              __strong RMIntroViewController *strongSelf = weakSelf;
              [strongSelf loadGL];
              [strongSelf startTimer];
@@ -78605,7 +78605,7 @@ index 2b2977e4..a5d95078 100644
          }];
          
          _alternativeLanguageButton = [[TGModernButton alloc] init];
-@@ -302,6 +332,7 @@ typedef enum {
+@@ -302,6 +332,7 @@ - (void)loadGL
          _glkView.delegate = self;
          
          [self setupGL];
@@ -78613,7 +78613,7 @@ index 2b2977e4..a5d95078 100644
          [self.view addSubview:_glkView];
          
          [self startTimer];
-@@ -387,9 +418,16 @@ typedef enum {
+@@ -387,9 +418,16 @@ - (void)viewDidLoad
      _pageControl.pageIndicatorTintColor = _regularDotColor;
      _pageControl.currentPageIndicatorTintColor = _highlightedDotColor;
      [_wrapperView addSubview:_pageControl];
@@ -78630,7 +78630,7 @@ index 2b2977e4..a5d95078 100644
      UIImage *image = _glkView.snapshot;
      UIImageView *imageView = [[UIImageView alloc] initWithFrame:_glkView.frame];
      imageView.image = image;
-@@ -551,6 +589,7 @@ typedef enum {
+@@ -551,6 +589,7 @@ - (void)updateLayout
      
      _pageControl.frame = CGRectMake(0, pageControlY, self.view.bounds.size.width, 7);
      _glkView.frame = CGRectChangedOriginY(_glkView.frame, glViewY - statusBarHeight);
@@ -78638,7 +78638,7 @@ index 2b2977e4..a5d95078 100644
      
      CGFloat startButtonWidth = MIN(430.0 - 48.0, self.view.bounds.size.width - 48.0f);
      UIView *startButton = self.createStartButton(startButtonWidth);
-@@ -577,17 +616,20 @@ typedef enum {
+@@ -577,17 +616,20 @@ - (void)viewWillAppear:(BOOL)animated
      [super viewWillAppear:animated];
      
      [self loadGL];
@@ -78659,7 +78659,7 @@ index 2b2977e4..a5d95078 100644
      if (_startMessaging) {
          _startMessaging();
      }
-@@ -605,9 +647,466 @@ typedef enum {
+@@ -605,9 +647,466 @@ - (void)dealloc
      
      [_localizationsDisposable dispose];
      
@@ -79233,6 +79233,630 @@ index 29b9d386..c90fc342 100644
              
              apiEnvironment.apiId = arguments.apiId
              apiEnvironment.langPack = arguments.languagesCategory
+diff --git a/submodules/TelegramCore/Sources/Nyxa/NyxaIncomingGifts.swift b/submodules/TelegramCore/Sources/Nyxa/NyxaIncomingGifts.swift
+new file mode 100644
+index 00000000..c3f4ed4e
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Nyxa/NyxaIncomingGifts.swift
+@@ -0,0 +1,618 @@
++import Foundation
++import Postbox
++import SwiftSignalKit
++
++// An NFT kept on this device to be "received" later in a chat
++public struct NyxaIncomingGiftNFT: Codable, Equatable {
++    public let slug: String
++    public let gift: StarGift
++    
++    public init(slug: String, gift: StarGift) {
++        self.slug = slug
++        self.gift = gift
++    }
++    
++    public var title: String {
++        if case let .unique(gift) = self.gift {
++            return "\(gift.title) #\(gift.number)"
++        }
++        return self.slug
++    }
++}
++
++public enum NyxaIncomingGiftTrigger: String, Codable, CaseIterable {
++    // a gift arrives a few seconds after you write in the chat
++    case onMessage
++    // a gift arrives after a message that contains a chosen word
++    case onKeyword
++    // a gift arrives after you send a voice message
++    case onVoice
++    // a gift arrives after you send a sticker or a GIF
++    case onSticker
++    // a gift arrives after you send a photo, a video or a file
++    case onMedia
++    // a gift arrives a few seconds after you open the chat
++    case onOpen
++    // a gift arrives once, N seconds after the rule is armed in Settings
++    case afterDelay
++    // a gift arrives at a random moment after you write in the chat
++    case random
++}
++
++public enum NyxaIncomingGiftCountMode: String, Codable {
++    // each time the number is random from 1 to the maximum
++    case random
++    // the whole set arrives at once
++    case exact
++}
++
++public struct NyxaIncomingGiftRule: Codable, Equatable {
++    public let id: Int64
++    public let peerId: Int64
++    public let peerTitle: String
++    // empty means any NFT from the pool
++    public var slugs: [String]
++    public var trigger: NyxaIncomingGiftTrigger
++    public var delay: Int32
++    public var maxCount: Int32
++    public var countMode: NyxaIncomingGiftCountMode
++    // only for the keyword trigger; empty means the trigger never matches
++    public var keyword: String
++    // a caption under the gift; empty means no caption
++    public var text: String
++    public var armedAt: Int32?
++    public var lastFiredAt: Int32?
++    public var messageIds: [Int32]
++    
++    public init(id: Int64, peerId: Int64, peerTitle: String, slugs: [String], trigger: NyxaIncomingGiftTrigger, delay: Int32, maxCount: Int32, countMode: NyxaIncomingGiftCountMode = .random, keyword: String = "", text: String = "", armedAt: Int32? = nil, lastFiredAt: Int32? = nil, messageIds: [Int32] = []) {
++        self.id = id
++        self.peerId = peerId
++        self.peerTitle = peerTitle
++        self.slugs = slugs
++        self.trigger = trigger
++        self.delay = delay
++        self.maxCount = maxCount
++        self.countMode = countMode
++        self.keyword = keyword
++        self.text = text
++        self.armedAt = armedAt
++        self.lastFiredAt = lastFiredAt
++        self.messageIds = messageIds
++    }
++    
++    private enum CodingKeys: String, CodingKey {
++        case id
++        case peerId
++        case peerTitle
++        case slugs
++        case trigger
++        case delay
++        case maxCount
++        case countMode
++        case keyword
++        case text
++        case armedAt
++        case lastFiredAt
++        case messageIds
++    }
++    
++    // the newer fields fall back to their defaults, so rules saved by an older build still load
++    public init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: CodingKeys.self)
++        self.id = try container.decode(Int64.self, forKey: .id)
++        self.peerId = try container.decode(Int64.self, forKey: .peerId)
++        self.peerTitle = try container.decode(String.self, forKey: .peerTitle)
++        self.slugs = try container.decodeIfPresent([String].self, forKey: .slugs) ?? []
++        self.trigger = try container.decodeIfPresent(NyxaIncomingGiftTrigger.self, forKey: .trigger) ?? .onMessage
++        self.delay = try container.decodeIfPresent(Int32.self, forKey: .delay) ?? NyxaIncomingGifts.defaultDelay
++        self.maxCount = try container.decodeIfPresent(Int32.self, forKey: .maxCount) ?? 1
++        self.countMode = try container.decodeIfPresent(NyxaIncomingGiftCountMode.self, forKey: .countMode) ?? .random
++        self.keyword = try container.decodeIfPresent(String.self, forKey: .keyword) ?? ""
++        self.text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
++        self.armedAt = try container.decodeIfPresent(Int32.self, forKey: .armedAt)
++        self.lastFiredAt = try container.decodeIfPresent(Int32.self, forKey: .lastFiredAt)
++        self.messageIds = try container.decodeIfPresent([Int32].self, forKey: .messageIds) ?? []
++    }
++}
++
++// Fake incoming gifts: NFTs that appear in chats as if the other person had sent them.
++// The messages are local: they live in this device's database and are never sent anywhere.
++public enum NyxaIncomingGifts {
++    public static let didChangeNotification = Notification.Name("NyxaIncomingGiftsDidChange")
++    public static let defaultDelay: Int32 = 30
++    public static let minimumDelay: Int32 = 5
++    public static let maximumDelay: Int32 = 3600
++    public static let maximumCount: Int32 = 5
++    public static let onMessageDelayRange: ClosedRange<Double> = 3.0 ... 8.0
++    public static let randomDelayRange: ClosedRange<Double> = 15.0 ... 90.0
++    
++    private static let lock = NSLock()
++    private static let maximumStoredMessageIds = 200
++    
++    public static func start(account: Account) {
++        NyxaIncomingGiftsScheduler.shared.start(account: account)
++    }
++    
++    public static var enabled: Bool {
++        get {
++            return UserDefaults.standard.bool(forKey: "nyxa.incomingGifts.enabled")
++        }
++        set {
++            UserDefaults.standard.set(newValue, forKey: "nyxa.incomingGifts.enabled")
++            NotificationCenter.default.post(name: didChangeNotification, object: nil)
++            if newValue {
++                NyxaIncomingGiftsScheduler.shared.resume()
++            } else {
++                NyxaIncomingGiftsScheduler.shared.cancelAll()
++            }
++        }
++    }
++    
++    private static func poolKey(_ accountPeerId: PeerId) -> String {
++        return "nyxa.incomingGifts.pool.\(accountPeerId.toInt64())"
++    }
++    
++    private static func rulesKey(_ accountPeerId: PeerId) -> String {
++        return "nyxa.incomingGifts.rules.\(accountPeerId.toInt64())"
++    }
++    
++    // These read and write without the lock; callers hold it
++    private static func loadPool(_ accountPeerId: PeerId) -> [NyxaIncomingGiftNFT] {
++        guard let data = UserDefaults.standard.data(forKey: poolKey(accountPeerId)) else {
++            return []
++        }
++        return (try? JSONDecoder().decode([NyxaIncomingGiftNFT].self, from: data)) ?? []
++    }
++    
++    private static func savePool(_ nfts: [NyxaIncomingGiftNFT], accountPeerId: PeerId) {
++        if let data = try? JSONEncoder().encode(nfts) {
++            UserDefaults.standard.set(data, forKey: poolKey(accountPeerId))
++        }
++    }
++    
++    private static func loadRules(_ accountPeerId: PeerId) -> [NyxaIncomingGiftRule] {
++        guard let data = UserDefaults.standard.data(forKey: rulesKey(accountPeerId)) else {
++            return []
++        }
++        return (try? JSONDecoder().decode([NyxaIncomingGiftRule].self, from: data)) ?? []
++    }
++    
++    private static func saveRules(_ rules: [NyxaIncomingGiftRule], accountPeerId: PeerId) {
++        if let data = try? JSONEncoder().encode(rules) {
++            UserDefaults.standard.set(data, forKey: rulesKey(accountPeerId))
++        }
++    }
++    
++    public static func pool(accountPeerId: PeerId) -> [NyxaIncomingGiftNFT] {
++        lock.lock()
++        defer {
++            lock.unlock()
++        }
++        return loadPool(accountPeerId)
++    }
++    
++    // Returns false when this NFT is already in the pool
++    @discardableResult
++    public static func addToPool(accountPeerId: PeerId, gift: StarGift.UniqueGift) -> Bool {
++        lock.lock()
++        var nfts = loadPool(accountPeerId)
++        guard !nfts.contains(where: { $0.slug == gift.slug }) else {
++            lock.unlock()
++            return false
++        }
++        nfts.insert(NyxaIncomingGiftNFT(slug: gift.slug, gift: .unique(gift)), at: 0)
++        savePool(nfts, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        return true
++    }
++    
++    public static func removeFromPool(accountPeerId: PeerId, slug: String) {
++        lock.lock()
++        var nfts = loadPool(accountPeerId)
++        if !nfts.contains(where: { $0.slug == slug }) {
++            lock.unlock()
++            return
++        }
++        nfts.removeAll(where: { $0.slug == slug })
++        savePool(nfts, accountPeerId: accountPeerId)
++        // a removed NFT must not stay picked in chats, otherwise those rules would silently stop delivering
++        var rules = loadRules(accountPeerId)
++        for index in rules.indices {
++            rules[index].slugs.removeAll(where: { $0 == slug })
++        }
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++    }
++    
++    public static func rules(accountPeerId: PeerId) -> [NyxaIncomingGiftRule] {
++        lock.lock()
++        defer {
++            lock.unlock()
++        }
++        return loadRules(accountPeerId)
++    }
++    
++    public static func rule(id: Int64, accountPeerId: PeerId) -> NyxaIncomingGiftRule? {
++        return rules(accountPeerId: accountPeerId).first(where: { $0.id == id })
++    }
++    
++    @discardableResult
++    public static func addRule(accountPeerId: PeerId, peerId: PeerId, peerTitle: String, slugs: [String] = [], trigger: NyxaIncomingGiftTrigger = .onMessage, delay: Int32 = NyxaIncomingGifts.defaultDelay, maxCount: Int32 = 1) -> Int64 {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        let id = Int64(Date().timeIntervalSince1970 * 1000.0) * 1000 + Int64.random(in: 0 ..< 1000)
++        rules.append(NyxaIncomingGiftRule(id: id, peerId: peerId.toInt64(), peerTitle: peerTitle, slugs: slugs, trigger: trigger, delay: clampDelay(delay), maxCount: clampCount(maxCount)))
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        return id
++    }
++    
++    public static func updateRule(_ rule: NyxaIncomingGiftRule, accountPeerId: PeerId) {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        guard let index = rules.firstIndex(where: { $0.id == rule.id }) else {
++            lock.unlock()
++            return
++        }
++        var updated = rule
++        updated.delay = clampDelay(updated.delay)
++        updated.maxCount = clampCount(updated.maxCount)
++        rules[index] = updated
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++    }
++    
++    public static func removeRule(id: Int64, accountPeerId: PeerId) {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        guard let index = rules.firstIndex(where: { $0.id == id }) else {
++            lock.unlock()
++            return
++        }
++        let rule = rules.remove(at: index)
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        
++        NyxaIncomingGiftsScheduler.shared.cancel(ruleId: id)
++        if let account = NyxaIncomingGiftsScheduler.shared.account, !rule.messageIds.isEmpty {
++            let ids = rule.messageIds.map { MessageId(peerId: PeerId(rule.peerId), namespace: Namespaces.Message.Local, id: $0) }
++            let _ = account.postbox.transaction { transaction -> Void in
++                transaction.deleteMessages(ids, forEachMedia: nil)
++            }.start()
++        }
++    }
++    
++    // Starts the countdown of an "after N seconds" rule; it also restores the rule after a relaunch
++    public static func arm(ruleId: Int64, accountPeerId: PeerId) {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        guard let index = rules.firstIndex(where: { $0.id == ruleId }) else {
++            lock.unlock()
++            return
++        }
++        rules[index].armedAt = Int32(Date().timeIntervalSince1970)
++        let rule = rules[index]
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        
++        NyxaIncomingGiftsScheduler.shared.schedule(ruleId: rule.id, after: Double(rule.delay))
++    }
++    
++    public static func disarm(ruleId: Int64, accountPeerId: PeerId) {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        guard let index = rules.firstIndex(where: { $0.id == ruleId }) else {
++            lock.unlock()
++            return
++        }
++        rules[index].armedAt = nil
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        
++        NyxaIncomingGiftsScheduler.shared.cancel(ruleId: ruleId)
++    }
++    
++    public static func fireNow(ruleId: Int64, accountPeerId: PeerId) {
++        NyxaIncomingGiftsScheduler.shared.fire(ruleId: ruleId, force: true)
++    }
++    
++    static func clampDelay(_ delay: Int32) -> Int32 {
++        return max(minimumDelay, min(maximumDelay, delay))
++    }
++    
++    static func clampCount(_ count: Int32) -> Int32 {
++        return max(1, min(maximumCount, count))
++    }
++    
++    // Called when an outgoing message has been stored: schedules the rules of that chat
++    static func noteOwnMessage(accountPeerId: PeerId, peerId: PeerId, text: String?, isVoice: Bool, isSticker: Bool, isMedia: Bool) {
++        guard peerId.namespace == Namespaces.Peer.CloudUser else {
++            return
++        }
++        DispatchQueue.main.async {
++            guard enabled else {
++                return
++            }
++            let peerRules = rules(accountPeerId: accountPeerId).filter { $0.peerId == peerId.toInt64() }
++            guard !peerRules.isEmpty else {
++                return
++            }
++            for rule in peerRules {
++                guard rule.matchesMessage(text: text, isVoice: isVoice, isSticker: isSticker, isMedia: isMedia) else {
++                    continue
++                }
++                switch rule.trigger {
++                case .onMessage, .onKeyword, .onVoice, .onSticker, .onMedia:
++                    NyxaIncomingGiftsScheduler.shared.schedule(ruleId: rule.id, after: Double.random(in: onMessageDelayRange))
++                case .random:
++                    NyxaIncomingGiftsScheduler.shared.schedule(ruleId: rule.id, after: Double.random(in: randomDelayRange))
++                case .onOpen, .afterDelay:
++                    break
++                }
++            }
++        }
++    }
++    
++    // Called from the chat screen: "when I open the chat" rules fire once, with a cooldown against
++    // repeated viewWillAppear calls (coming back from a profile, the app returning to the foreground)
++    public static func noteChatOpened(accountPeerId: PeerId, peerId: PeerId) {
++        guard peerId.namespace == Namespaces.Peer.CloudUser else {
++            return
++        }
++        DispatchQueue.main.async {
++            guard enabled else {
++                return
++            }
++            let now = Int32(Date().timeIntervalSince1970)
++            for rule in rules(accountPeerId: accountPeerId) where rule.peerId == peerId.toInt64() && rule.trigger == .onOpen {
++                if let lastFiredAt = rule.lastFiredAt, now - lastFiredAt < 60 {
++                    continue
++                }
++                NyxaIncomingGiftsScheduler.shared.schedule(ruleId: rule.id, after: Double.random(in: 4.0 ... 12.0))
++            }
++        }
++    }
++    
++    static func markFired(ruleId: Int64, accountPeerId: PeerId, disarmTimer: Bool) {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        guard let index = rules.firstIndex(where: { $0.id == ruleId }) else {
++            lock.unlock()
++            return
++        }
++        rules[index].lastFiredAt = Int32(Date().timeIntervalSince1970)
++        if disarmTimer {
++            rules[index].armedAt = nil
++        }
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++    }
++    
++    static func recordMessage(ruleId: Int64, accountPeerId: PeerId, messageId: Int32) {
++        lock.lock()
++        var rules = loadRules(accountPeerId)
++        guard let index = rules.firstIndex(where: { $0.id == ruleId }) else {
++            lock.unlock()
++            return
++        }
++        rules[index].messageIds.append(messageId)
++        if rules[index].messageIds.count > maximumStoredMessageIds {
++            rules[index].messageIds.removeFirst(rules[index].messageIds.count - maximumStoredMessageIds)
++        }
++        saveRules(rules, accountPeerId: accountPeerId)
++        lock.unlock()
++    }
++}
++
++private extension NyxaIncomingGiftRule {
++    func matchesMessage(text: String?, isVoice: Bool, isSticker: Bool, isMedia: Bool) -> Bool {
++        switch self.trigger {
++        case .onMessage, .random:
++            return true
++        case .onKeyword:
++            let keyword = self.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
++            guard !keyword.isEmpty, let text, !text.isEmpty else {
++                return false
++            }
++            return text.range(of: keyword, options: [.caseInsensitive, .diacriticInsensitive]) != nil
++        case .onVoice:
++            return isVoice
++        case .onSticker:
++            return isSticker
++        case .onMedia:
++            return isMedia
++        case .onOpen, .afterDelay:
++            return false
++        }
++    }
++}
++
++private func nyxaIncomingGiftOwnedUniqueGift(_ gift: StarGift.UniqueGift, owner: PeerId) -> StarGift.UniqueGift {
++    return StarGift.UniqueGift(
++        id: gift.id,
++        giftId: gift.giftId,
++        title: gift.title,
++        number: gift.number,
++        slug: gift.slug,
++        owner: .peerId(owner),
++        attributes: gift.attributes,
++        availability: gift.availability,
++        giftAddress: gift.giftAddress,
++        resellAmounts: gift.resellAmounts,
++        resellForTonOnly: gift.resellForTonOnly,
++        releasedBy: gift.releasedBy,
++        valueAmount: gift.valueAmount,
++        valueCurrency: gift.valueCurrency,
++        valueUsdAmount: gift.valueUsdAmount,
++        flags: gift.flags,
++        themePeerId: gift.themePeerId,
++        peerColor: gift.peerColor,
++        hostPeerId: gift.hostPeerId,
++        minOfferStars: gift.minOfferStars,
++        craftChancePermille: gift.craftChancePermille
++    )
++}
++
++// A gift "from" the other person: an incoming local message with the usual NFT bubble
++func _internal_nyxaPostIncomingGiftMessage(account: Account, peerId: PeerId, gift: StarGift.UniqueGift, text: String) -> Signal<Int32?, NoError> {
++    let accountPeerId = account.peerId
++    return account.postbox.transaction { transaction -> Int32? in
++        guard peerId.namespace == Namespaces.Peer.CloudUser, transaction.getPeer(peerId) != nil else {
++            return nil
++        }
++        let ownedGift = nyxaIncomingGiftOwnedUniqueGift(gift, owner: accountPeerId)
++        let caption = text.trimmingCharacters(in: .whitespacesAndNewlines)
++        let action = TelegramMediaActionType.starGiftUnique(gift: .unique(ownedGift), isUpgrade: false, isTransferred: false, savedToProfile: false, canExportDate: nil, transferStars: nil, isRefunded: false, isPrepaidUpgrade: false, peerId: nil, senderId: peerId, savedId: nil, resaleAmount: nil, canTransferDate: nil, canResaleDate: nil, dropOriginalDetailsStars: nil, assigned: false, fromOffer: false, canCraftAt: nil, isCrafted: false, text: caption.isEmpty ? nil : caption, entities: nil, nameHidden: false)
++        let randomId = Int64.random(in: Int64.min ... Int64.max)
++        let timestamp = Int32(clamping: Int64(Date().timeIntervalSince1970))
++        let message = StoreMessage(peerId: peerId, namespace: Namespaces.Message.Local, customStableId: nil, globallyUniqueId: randomId, groupingKey: nil, threadId: nil, timestamp: timestamp, flags: [.Incoming], tags: [], globalTags: [], localTags: [], forwardInfo: nil, authorId: peerId, text: "", attributes: [], media: [
++            TelegramMediaAction(action: action)
++        ])
++        guard let id = transaction.addMessages([message], location: .Random)[randomId] else {
++            return nil
++        }
++        if case .notIncluded = transaction.getPeerChatListInclusion(peerId) {
++            transaction.updatePeerChatListInclusion(peerId, inclusion: .ifHasMessagesOrOneOf(groupId: .root, pinningIndex: nil, minTimestamp: nil))
++        }
++        return id.id
++    }
++}
++
++private final class NyxaIncomingGiftsScheduler {
++    static let shared = NyxaIncomingGiftsScheduler()
++    
++    private(set) var account: Account?
++    private var pending: [Int64: DispatchWorkItem] = [:]
++    
++    func start(account: Account) {
++        self.account = account
++        self.resume()
++    }
++    
++    // Re-arms "after N seconds" rules: overdue ones arrive right away, the rest keep their countdown
++    func resume() {
++        guard let account else {
++            return
++        }
++        let now = Int32(Date().timeIntervalSince1970)
++        for rule in NyxaIncomingGifts.rules(accountPeerId: account.peerId) where rule.trigger == .afterDelay {
++            guard let armedAt = rule.armedAt else {
++                continue
++            }
++            let remaining = Int(armedAt) + Int(rule.delay) - Int(now)
++            if remaining <= 0 {
++                self.schedule(ruleId: rule.id, after: 2.0)
++            } else {
++                self.schedule(ruleId: rule.id, after: Double(remaining))
++            }
++        }
++    }
++    
++    func schedule(ruleId: Int64, after: Double) {
++        self.pending[ruleId]?.cancel()
++        let work = DispatchWorkItem { [weak self] in
++            guard let self else {
++                return
++            }
++            self.pending.removeValue(forKey: ruleId)
++            self.fire(ruleId: ruleId, force: false)
++        }
++        self.pending[ruleId] = work
++        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.5, after), execute: work)
++    }
++    
++    func cancel(ruleId: Int64) {
++        self.pending[ruleId]?.cancel()
++        self.pending.removeValue(forKey: ruleId)
++    }
++    
++    func cancelAll() {
++        for (_, work) in self.pending {
++            work.cancel()
++        }
++        self.pending.removeAll()
++    }
++    
++    func fire(ruleId: Int64, force: Bool) {
++        guard let account, NyxaIncomingGifts.enabled || force else {
++            return
++        }
++        let accountPeerId = account.peerId
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        let peerId = PeerId(rule.peerId)
++        guard peerId.namespace == Namespaces.Peer.CloudUser else {
++            return
++        }
++        
++        var available = NyxaIncomingGifts.pool(accountPeerId: accountPeerId)
++        if !rule.slugs.isEmpty {
++            available = available.filter { rule.slugs.contains($0.slug) }
++        }
++        guard !available.isEmpty else {
++            return
++        }
++        
++        let maximum = Int(NyxaIncomingGifts.clampCount(rule.maxCount))
++        let count: Int
++        switch rule.countMode {
++        case .random:
++            count = Int.random(in: 1 ... maximum)
++        case .exact:
++            count = maximum
++        }
++        var remaining = available
++        var chosen: [NyxaIncomingGiftNFT] = []
++        for _ in 0 ..< count {
++            if remaining.isEmpty {
++                remaining = available
++            }
++            guard !remaining.isEmpty else {
++                break
++            }
++            chosen.append(remaining.remove(at: Int.random(in: 0 ..< remaining.count)))
++        }
++        
++        if rule.trigger == .afterDelay {
++            self.cancel(ruleId: ruleId)
++        }
++        NyxaIncomingGifts.markFired(ruleId: ruleId, accountPeerId: accountPeerId, disarmTimer: rule.trigger == .afterDelay)
++        
++        for (index, nft) in chosen.enumerated() {
++            guard case let .unique(uniqueGift) = nft.gift else {
++                continue
++            }
++            let post: () -> Void = {
++                guard force || NyxaIncomingGifts.enabled else {
++                    return
++                }
++                guard let current = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++                    return
++                }
++                guard current.trigger == rule.trigger else {
++                    return
++                }
++                let _ = _internal_nyxaPostIncomingGiftMessage(account: account, peerId: peerId, gift: uniqueGift, text: rule.text).start(next: { messageId in
++                    guard let messageId else {
++                        return
++                    }
++                    NyxaIncomingGifts.recordMessage(ruleId: ruleId, accountPeerId: accountPeerId, messageId: messageId)
++                })
++            }
++            if index == 0 {
++                post()
++            } else {
++                DispatchQueue.main.asyncAfter(deadline: .now() + Double.random(in: 2.0 ... 5.0), execute: post)
++            }
++        }
++    }
++}
 diff --git a/submodules/TelegramCore/Sources/Nyxa/NyxaSettings.swift b/submodules/TelegramCore/Sources/Nyxa/NyxaSettings.swift
 new file mode 100644
 index 00000000..1baae57d
@@ -80484,7 +81108,7 @@ index 00000000..1baae57d
 +    }
 +}
 diff --git a/submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift b/submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift
-index a8b125e8..0ee1abb0 100644
+index a8b125e8..3848eb2f 100644
 --- a/submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift
 +++ b/submodules/TelegramCore/Sources/PendingMessages/EnqueueMessage.swift
 @@ -858,6 +858,15 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
@@ -80503,6 +81127,38 @@ index a8b125e8..0ee1abb0 100644
          if transformGroupingKeysWithPeerId {
              updatedMessage = updatedMessage.withUpdatedGroupingKey { groupingKey -> Int64? in
                  if let groupingKey = groupingKey {
+@@ -1467,6 +1476,31 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
+         for hashtag in addedHashtags {
+             addRecentlyUsedHashtag(transaction: transaction, string: hashtag)
+         }
++        if storeMessages.contains(where: { $0.id.namespace == Namespaces.Message.Cloud }) {
++            var nyxaText: String?
++            var nyxaIsVoice = false
++            var nyxaIsSticker = false
++            var nyxaIsMedia = false
++            for storedMessage in storeMessages {
++                if nyxaText == nil && !storedMessage.text.isEmpty {
++                    nyxaText = storedMessage.text
++                }
++                for media in storedMessage.media {
++                    if let file = media as? TelegramMediaFile {
++                        if file.isVoice {
++                            nyxaIsVoice = true
++                        } else if file.isSticker || file.isAnimatedSticker {
++                            nyxaIsSticker = true
++                        } else {
++                            nyxaIsMedia = true
++                        }
++                    } else if media is TelegramMediaImage {
++                        nyxaIsMedia = true
++                    }
++                }
++            }
++            NyxaIncomingGifts.noteOwnMessage(accountPeerId: account.peerId, peerId: peerId, text: nyxaText, isVoice: nyxaIsVoice, isSticker: nyxaIsSticker, isMedia: nyxaIsMedia)
++        }
+         return messageIds
+     } else {
+         return []
 diff --git a/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift b/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
 index ba4569ed..a9535b5b 100644
 --- a/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
@@ -82912,10 +83568,10 @@ index 00000000..d0608732
 +
 diff --git a/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/NyxaSettingsController.swift b/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/NyxaSettingsController.swift
 new file mode 100644
-index 00000000..a7a01fd5
+index 00000000..57e439e3
 --- /dev/null
 +++ b/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/NyxaSettingsController.swift
-@@ -0,0 +1,2270 @@
+@@ -0,0 +1,3350 @@
 +import Foundation
 +import UIKit
 +import Display
@@ -83216,6 +83872,7 @@ index 00000000..a7a01fd5
 +    static let demoPremium = renderNyxaSettingsIcon(systemName: "sparkles", backgroundColors: [UIColor(rgb: 0xC36BFF), UIColor(rgb: 0x8A2BE2)])
 +    static let fakeLevel = renderNyxaSettingsIcon(systemName: "chart.bar.fill", backgroundColors: [UIColor(rgb: 0xFFD54F), UIColor(rgb: 0xFF9500)])
 +    static let fakeGifts = renderNyxaSettingsIcon(systemName: "gift.fill", backgroundColors: [UIColor(rgb: 0xC36BFF), UIColor(rgb: 0x8A2BE2)])
++    static let incomingGifts = renderNyxaSettingsIcon(systemName: "gift.circle.fill", backgroundColors: [UIColor(rgb: 0xFF6B8A), UIColor(rgb: 0xC9184A)])
 +    static let autocorrect = renderNyxaSettingsIcon(systemName: "textformat.abc", backgroundColors: [UIColor(rgb: 0xFFB25B), UIColor(rgb: 0xFF9500)])
 +    static let deviceTranslation = renderNyxaSettingsIcon(systemName: "character.bubble.fill", backgroundColors: [UIColor(rgb: 0x5BE07A), UIColor(rgb: 0x34C759)])
 +    static let findById = renderNyxaSettingsIcon(systemName: "number.circle.fill", backgroundColors: [UIColor(rgb: 0x5AC8FA), UIColor(rgb: 0x007AFF)])
@@ -83377,6 +84034,7 @@ index 00000000..a7a01fd5
 +    let openStreaks: () -> Void
 +    let openDevice: () -> Void
 +    let openFakeGifts: () -> Void
++    let openIncomingGifts: () -> Void
 +    let openFakeStars: () -> Void
 +    let openNotUpgraded: () -> Void
 +    let openLocalPremium: () -> Void
@@ -83389,7 +84047,7 @@ index 00000000..a7a01fd5
 +    let openFrames: () -> Void
 +    let openBanner: () -> Void
 +
-+    init(openDeleted: @escaping () -> Void, openGhost: @escaping () -> Void, openFakePhone: @escaping () -> Void, openFakeUsernames: @escaping () -> Void, openStreaks: @escaping () -> Void, openDevice: @escaping () -> Void, openFakeGifts: @escaping () -> Void, openFakeStars: @escaping () -> Void, openNotUpgraded: @escaping () -> Void, openLocalPremium: @escaping () -> Void, openDeviceTranslation: @escaping () -> Void, openAutocorrect: @escaping () -> Void, openFindById: @escaping () -> Void, toggle: @escaping (NyxaToggle, Bool) -> Void, exportBackup: @escaping () -> Void, importBackup: @escaping () -> Void, openFrames: @escaping () -> Void, openBanner: @escaping () -> Void) {
++    init(openDeleted: @escaping () -> Void, openGhost: @escaping () -> Void, openFakePhone: @escaping () -> Void, openFakeUsernames: @escaping () -> Void, openStreaks: @escaping () -> Void, openDevice: @escaping () -> Void, openFakeGifts: @escaping () -> Void, openIncomingGifts: @escaping () -> Void, openFakeStars: @escaping () -> Void, openNotUpgraded: @escaping () -> Void, openLocalPremium: @escaping () -> Void, openDeviceTranslation: @escaping () -> Void, openAutocorrect: @escaping () -> Void, openFindById: @escaping () -> Void, toggle: @escaping (NyxaToggle, Bool) -> Void, exportBackup: @escaping () -> Void, importBackup: @escaping () -> Void, openFrames: @escaping () -> Void, openBanner: @escaping () -> Void) {
 +        self.openDeleted = openDeleted
 +        self.openGhost = openGhost
 +        self.openFakePhone = openFakePhone
@@ -83397,6 +84055,7 @@ index 00000000..a7a01fd5
 +        self.openStreaks = openStreaks
 +        self.openDevice = openDevice
 +        self.openFakeGifts = openFakeGifts
++        self.openIncomingGifts = openIncomingGifts
 +        self.openFakeStars = openFakeStars
 +        self.openNotUpgraded = openNotUpgraded
 +        self.openLocalPremium = openLocalPremium
@@ -83421,6 +84080,7 @@ index 00000000..a7a01fd5
 +    case streaks(String, String)
 +    case device(String, String)
 +    case fakeGifts(String, String)
++    case incomingGifts(String, String)
 +    case fakeStars(String, String)
 +    case notUpgraded(String, String)
 +    case localPremium(String, String)
@@ -83467,6 +84127,8 @@ index 00000000..a7a01fd5
 +            return -140
 +        case .fakeGifts:
 +            return -130
++        case .incomingGifts:
++            return -125
 +        case .notUpgraded:
 +            return -120
 +        case .fakeStars:
@@ -83522,6 +84184,10 @@ index 00000000..a7a01fd5
 +        case let .fakeGifts(title, label):
 +            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.fakeGifts, title: title, label: label, sectionId: self.section, style: .blocks, action: {
 +                arguments.openFakeGifts()
++            })
++        case let .incomingGifts(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.incomingGifts, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.openIncomingGifts()
 +            })
 +        case let .autocorrect(title, label):
 +            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.autocorrect, title: title, label: label, sectionId: self.section, style: .blocks, action: {
@@ -85055,6 +85721,9 @@ index 00000000..a7a01fd5
 +        openFakeGifts: {
 +            pushImpl?(nyxaFakeGiftsController(context: context))
 +        },
++        openIncomingGifts: {
++            pushImpl?(nyxaIncomingGiftsController(context: context))
++        },
 +        openFakeStars: {
 +            pushImpl?(nyxaFakeStarsController(context: context))
 +        },
@@ -85116,7 +85785,7 @@ index 00000000..a7a01fd5
 +
 +    // labels for frames, banner, streaks, fake gifts and fake stars change on their own screens
 +    let appearanceRevision = ValuePromise<Int>(0, ignoreRepeated: true)
-+    let appearanceObserver = NyxaNotificationObserver(names: [NyxaAppearanceSettings.didChangeNotification, NyxaStreaks.didChangeNotification, NyxaFakeGifts.didChangeNotification, NyxaSettings.fakeBalanceDidChangeNotification, NyxaLocalPremium.didChangeNotification, NyxaSettings.deviceTranslationDidChangeNotification, NyxaSettings.autocorrectDidChangeNotification], action: { revision in
++    let appearanceObserver = NyxaNotificationObserver(names: [NyxaAppearanceSettings.didChangeNotification, NyxaStreaks.didChangeNotification, NyxaFakeGifts.didChangeNotification, NyxaSettings.fakeBalanceDidChangeNotification, NyxaLocalPremium.didChangeNotification, NyxaSettings.deviceTranslationDidChangeNotification, NyxaSettings.autocorrectDidChangeNotification, NyxaIncomingGifts.didChangeNotification], action: { revision in
 +        appearanceRevision.set(revision)
 +    })
 +
@@ -85136,6 +85805,7 @@ index 00000000..a7a01fd5
 +            .fakePhone(strings.fakePhoneTitle, state.fakePhone ? strings.on : strings.off),
 +            .fakeUsernames(strings.fakeUsernamesTitle, state.fakeUsernames ? strings.on : strings.off),
 +            .fakeGifts(isRussian ? "Fake подарки" : "Fake Gifts", NyxaFakeGifts.enabled ? strings.on : strings.off),
++            .incomingGifts(isRussian ? "Входящие подарки" : "Incoming Gifts", NyxaIncomingGifts.enabled ? "\(NyxaIncomingGifts.rules(accountPeerId: context.account.peerId).count)" : strings.off),
 +            .notUpgraded(isRussian ? "Неулучшенные подарки" : "Not Upgraded Gifts", NyxaFakeGifts.notUpgraded ? strings.on : strings.off),
 +            .fakeStars(isRussian ? "Фейк звёзды" : "Fake Stars", nyxaCountLabel(enabled: (NyxaSettings.fakeStarsEnabled ? 1 : 0) + (NyxaSettings.fakeGramEnabled ? 1 : 0), total: 2, strings: strings)),
 +            .localPremium(isRussian ? "Локальный премиум" : "Local Premium", NyxaLocalPremium.enabled ? strings.on : strings.off),
@@ -85185,6 +85855,1072 @@ index 00000000..a7a01fd5
 +        return controller?.navigationController as? NavigationController
 +    }
 +    return controller
++}
++
++// MARK: - Incoming gifts
++
++private func nyxaIncomingGiftTriggerTitle(_ trigger: NyxaIncomingGiftTrigger, isRussian: Bool) -> String {
++    switch trigger {
++    case .onMessage:
++        return isRussian ? "Когда я напишу" : "When I Send a Message"
++    case .onKeyword:
++        return isRussian ? "Когда напишу слово" : "When I Write a Word"
++    case .onVoice:
++        return isRussian ? "Когда отправлю голосовое" : "When I Send a Voice Message"
++    case .onSticker:
++        return isRussian ? "Когда отправлю стикер или GIF" : "When I Send a Sticker or GIF"
++    case .onMedia:
++        return isRussian ? "Когда отправлю фото, видео или файл" : "When I Send a Photo, Video or File"
++    case .onOpen:
++        return isRussian ? "Когда открою чат" : "When I Open the Chat"
++    case .afterDelay:
++        return isRussian ? "По таймеру" : "On a Timer"
++    case .random:
++        return isRussian ? "Случайно после сообщения" : "Random After a Message"
++    }
++}
++
++private func nyxaIncomingGiftShortLabel(_ rule: NyxaIncomingGiftRule, isRussian: Bool) -> String {
++    switch rule.trigger {
++    case .onMessage:
++        return isRussian ? "После сообщения" : "After a Message"
++    case .onKeyword:
++        return isRussian ? "Слово" : "Word"
++    case .onVoice:
++        return isRussian ? "Голосовое" : "Voice"
++    case .onSticker:
++        return isRussian ? "Стикер" : "Sticker"
++    case .onMedia:
++        return isRussian ? "Фото/видео" : "Media"
++    case .onOpen:
++        return isRussian ? "При открытии" : "On Open"
++    case .afterDelay:
++        if rule.armedAt != nil {
++            return isRussian ? "Через \(rule.delay) сек" : "In \(rule.delay) sec"
++        }
++        return isRussian ? "Таймер" : "Timer"
++    case .random:
++        return isRussian ? "Случайно" : "Random"
++    }
++}
++
++private func nyxaIncomingGiftSlug(from text: String) -> String? {
++    var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
++    if let range = value.range(of: "telegram.me/nft/") {
++        value = String(value[range.upperBound...])
++    } else if let range = value.range(of: "t.me/nft/") {
++        value = String(value[range.upperBound...])
++    }
++    if let index = value.firstIndex(where: { $0 == "?" || $0 == "#" || $0 == "/" }) {
++        value = String(value[..<index])
++    }
++    guard !value.isEmpty, value.count <= 64 else {
++        return nil
++    }
++    for character in value {
++        if !character.isLetter && !character.isNumber && character != "-" && character != "_" {
++            return nil
++        }
++    }
++    return value
++}
++
++private func nyxaShowIncomingGiftAlert(context: AccountContext, text: String, present: @escaping (ViewController) -> Void) {
++    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++    Queue.mainQueue().after(0.3) {
++        present(textAlertController(context: context, title: nil, text: text, actions: [
++            TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})
++        ]))
++    }
++}
++
++private func nyxaAddIncomingGiftNFTByLink(context: AccountContext, present: @escaping (ViewController) -> Void) {
++    let isRussian = nyxaIsRussianLocale()
++    let prompt = promptController(context: context, text: isRussian ? "Добавить NFT" : "Add NFT", subtitle: isRussian ? "Вставьте ссылку на любой NFT вида t.me/nft/… или его короткое имя. Он будет приходить в выбранных чатах." : "Paste a link to any NFT like t.me/nft/… or its short name. It will arrive in the chats you choose.", value: "", placeholder: "t.me/nft/…", characterLimit: 100, apply: { value in
++        guard let value, let slug = nyxaIncomingGiftSlug(from: value) else {
++            nyxaShowIncomingGiftAlert(context: context, text: isRussian ? "Не похоже на ссылку на NFT. Нужна ссылка вида t.me/nft/… или короткое имя с номером." : "That doesn't look like an NFT link. Use a link like t.me/nft/… or the short name with its number.", present: present)
++            return
++        }
++        let signal = context.engine.payments.getUniqueStarGift(slug: slug)
++        |> deliverOnMainQueue
++        let _ = signal.start(next: { gift in
++            if NyxaIncomingGifts.addToPool(accountPeerId: context.account.peerId, gift: gift) {
++                nyxaShowIncomingGiftAlert(context: context, text: isRussian ? "NFT «\(gift.title) #\(gift.number)» добавлен. Теперь добавьте чат." : "“\(gift.title) #\(gift.number)” is added. Now add a chat.", present: present)
++            } else {
++                nyxaShowIncomingGiftAlert(context: context, text: isRussian ? "Этот NFT уже в наборе." : "This NFT is already in the set.", present: present)
++            }
++        }, error: { _ in
++            nyxaShowIncomingGiftAlert(context: context, text: isRussian ? "NFT не найден. Проверьте ссылку: она должна открывать коллекционный подарок." : "The NFT wasn't found. Check the link: it has to open a collectible gift.", present: present)
++        })
++    })
++    present(prompt)
++}
++
++private final class NyxaIncomingGiftsArguments {
++    let toggle: (Bool) -> Void
++    let addNFT: () -> Void
++    let removeNFT: (String, String) -> Void
++    let addFromFake: () -> Void
++    let addChat: () -> Void
++    let openRule: (Int64) -> Void
++    let removeAll: () -> Void
++
++    init(toggle: @escaping (Bool) -> Void, addNFT: @escaping () -> Void, removeNFT: @escaping (String, String) -> Void, addFromFake: @escaping () -> Void, addChat: @escaping () -> Void, openRule: @escaping (Int64) -> Void, removeAll: @escaping () -> Void) {
++        self.toggle = toggle
++        self.addNFT = addNFT
++        self.removeNFT = removeNFT
++        self.addFromFake = addFromFake
++        self.addChat = addChat
++        self.openRule = openRule
++        self.removeAll = removeAll
++    }
++}
++
++private enum NyxaIncomingGiftsEntry: ItemListNodeEntry {
++    case toggle(String, String, Bool)
++    case poolHeader(String)
++    case poolItem(Int32, String, String, String)
++    case addNFT(String)
++    case addFromFake(String)
++    case poolFooter(String)
++    case rulesHeader(String)
++    case rule(Int32, Int64, String, String)
++    case addChat(String)
++    case rulesFooter(String)
++    case removeAll(String)
++    case privacyFooter(String)
++
++    var section: ItemListSectionId {
++        switch self {
++        case .toggle:
++            return 0
++        case .poolHeader, .poolItem, .addNFT, .addFromFake, .poolFooter:
++            return 1
++        default:
++            return 2
++        }
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .toggle:
++            return 0
++        case .poolHeader:
++            return 10
++        case let .poolItem(index, _, _, _):
++            return 11 + index
++        case .addNFT:
++            return 1000
++        case .addFromFake:
++            return 1001
++        case .poolFooter:
++            return 1002
++        case .rulesHeader:
++            return 2000
++        case let .rule(index, _, _, _):
++            return 2001 + index
++        case .addChat:
++            return 3000
++        case .rulesFooter:
++            return 3001
++        case .removeAll:
++            return 3002
++        case .privacyFooter:
++            return 3003
++        }
++    }
++
++    static func <(lhs: NyxaIncomingGiftsEntry, rhs: NyxaIncomingGiftsEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaIncomingGiftsArguments
++        switch self {
++        case let .toggle(title, text, value):
++            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.incomingGifts, title: title, text: text, value: value, sectionId: self.section, style: .blocks, updated: { value in
++                arguments.toggle(value)
++            })
++        case let .poolHeader(text), let .rulesHeader(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .poolItem(_, slug, title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.fakeGifts, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.removeNFT(slug, title)
++            })
++        case let .addNFT(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.addNFT()
++            })
++        case let .addFromFake(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.addFromFake()
++            })
++        case let .poolFooter(text), let .rulesFooter(text), let .privacyFooter(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        case let .rule(_, id, title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.incomingMessages, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.openRule(id)
++            })
++        case let .addChat(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.addChat()
++            })
++        case let .removeAll(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .destructive, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.removeAll()
++            })
++        }
++    }
++}
++
++private func nyxaIncomingGiftsController(context: AccountContext) -> ViewController {
++    let accountPeerId = context.account.peerId
++    let isRussian = nyxaIsRussianLocale()
++    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    let observer = NyxaNotificationObserver(names: [NyxaIncomingGifts.didChangeNotification], action: { value in
++        revision.set(value)
++    })
++    var pushImpl: ((ViewController) -> Void)?
++    var presentImpl: ((ViewController) -> Void)?
++
++    let arguments = NyxaIncomingGiftsArguments(toggle: { value in
++        NyxaIncomingGifts.enabled = value
++    }, addNFT: {
++        nyxaAddIncomingGiftNFTByLink(context: context, present: { controller in
++            presentImpl?(controller)
++        })
++    }, removeNFT: { slug, title in
++        let alert = textAlertController(context: context, title: title, text: isRussian ? "Убрать этот NFT из набора? Уже пришедшие подарки останутся в чатах." : "Remove this NFT from the set? Gifts that already arrived stay in their chats.", actions: [
++            TextAlertAction(type: .genericAction, title: isRussian ? "Отмена" : "Cancel", action: {}),
++            TextAlertAction(type: .destructiveAction, title: isRussian ? "Убрать" : "Remove", action: {
++                NyxaIncomingGifts.removeFromPool(accountPeerId: accountPeerId, slug: slug)
++            })
++        ])
++        presentImpl?(alert)
++    }, addFromFake: {
++        pushImpl?(nyxaIncomingGiftFakePickerController(context: context))
++    }, addChat: {
++        pushImpl?(nyxaIncomingGiftPeersController(context: context))
++    }, openRule: { ruleId in
++        pushImpl?(nyxaIncomingGiftRuleController(context: context, ruleId: ruleId))
++    }, removeAll: {
++        let rules = NyxaIncomingGifts.rules(accountPeerId: accountPeerId)
++        guard !rules.isEmpty else {
++            return
++        }
++        let alert = textAlertController(context: context, title: nil, text: isRussian ? "Удалить все чаты из списка и убрать пришедшие подарки?" : "Remove all chats from the list and delete the gifts that arrived?", actions: [
++            TextAlertAction(type: .genericAction, title: isRussian ? "Отмена" : "Cancel", action: {}),
++            TextAlertAction(type: .destructiveAction, title: isRussian ? "Удалить" : "Delete", action: {
++                for rule in rules {
++                    NyxaIncomingGifts.removeRule(id: rule.id, accountPeerId: accountPeerId)
++                }
++            })
++        ])
++        presentImpl?(alert)
++    })
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        revision.get()
++    )
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let _ = observer
++        var entries: [NyxaIncomingGiftsEntry] = []
++        let enabled = NyxaIncomingGifts.enabled
++        entries.append(.toggle(isRussian ? "Входящие подарки" : "Incoming Gifts", isRussian ? "NFT «приходят» от собеседника в выбранных чатах" : "NFTs “arrive” from the other person in chosen chats", enabled))
++
++        let pool = NyxaIncomingGifts.pool(accountPeerId: accountPeerId)
++        entries.append(.poolHeader(isRussian ? "NFT ДЛЯ ПОДАРКОВ" : "NFTS FOR GIFTS"))
++        for (index, nft) in pool.enumerated() {
++            entries.append(.poolItem(Int32(index), nft.slug, nft.title, isRussian ? "Удалить" : "Remove"))
++        }
++        entries.append(.addNFT(isRussian ? "Добавить NFT по ссылке" : "Add NFT by Link"))
++        entries.append(.addFromFake(isRussian ? "Взять из фейк подарков" : "Take From Fake Gifts"))
++        if pool.isEmpty {
++            entries.append(.poolFooter(isRussian ? "Пока пусто. Откройте любой коллекционный подарок в Telegram, нажмите «Поделиться» и вставьте ссылку вида t.me/nft/… сюда." : "Nothing here yet. Open any collectible gift in Telegram, tap Share and paste a link like t.me/nft/… here."))
++        } else {
++            entries.append(.poolFooter(isRussian ? "Если в чате не выбран ни один NFT, придёт любой из этого набора." : "If no NFT is picked for a chat, any of these will arrive."))
++        }
++
++        let rules = NyxaIncomingGifts.rules(accountPeerId: accountPeerId)
++        entries.append(.rulesHeader(isRussian ? "ЧАТЫ" : "CHATS"))
++        for (index, rule) in rules.enumerated() {
++            entries.append(.rule(Int32(index), rule.id, rule.peerTitle, nyxaIncomingGiftShortLabel(rule, isRussian: isRussian)))
++        }
++        entries.append(.addChat(isRussian ? "Добавить чат" : "Add Chat"))
++        if rules.isEmpty {
++            entries.append(.rulesFooter(isRussian ? "Выберите чат с человеком: подарок придёт в нём от его имени. Настроить момент можно внутри чата." : "Pick a chat with a person: the gift will arrive there as if they sent it. The moment is set up inside the chat."))
++        } else {
++            entries.append(.rulesFooter(isRussian ? "Нажмите на чат, чтобы выбрать NFT, момент и количество подарков." : "Tap a chat to choose NFTs, the moment and how many gifts arrive."))
++            entries.append(.removeAll(isRussian ? "Удалить все чаты" : "Remove All Chats"))
++        }
++        entries.append(.privacyFooter(isRussian ? "Подарки хранятся только на этом устройстве: собеседник их не отправит и не увидит, сервер о них не узнает." : "The gifts live on this device only: the other person doesn't send or see them, and the server never learns about them."))
++
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Входящие подарки" : "Incoming Gifts"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
++        return (controllerState, (listState, arguments))
++    }
++
++    let controller = ItemListController(context: context, state: signal)
++    pushImpl = { [weak controller] c in
++        controller?.push(c)
++    }
++    presentImpl = { [weak controller] c in
++        controller?.present(c, in: .window(.root))
++    }
++    return controller
++}
++
++private final class NyxaIncomingGiftFakePickerArguments {
++    let add: (StarGift.UniqueGift) -> Void
++
++    init(add: @escaping (StarGift.UniqueGift) -> Void) {
++        self.add = add
++    }
++}
++
++private enum NyxaIncomingGiftFakePickerEntry: ItemListNodeEntry {
++    case header(String)
++    case item(Int32, String, StarGift.UniqueGift)
++    case empty(String)
++
++    var section: ItemListSectionId {
++        return 0
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .header:
++            return 0
++        case let .item(index, _, _):
++            return 1 + index
++        case .empty:
++            return 1000
++        }
++    }
++
++    static func <(lhs: NyxaIncomingGiftFakePickerEntry, rhs: NyxaIncomingGiftFakePickerEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaIncomingGiftFakePickerArguments
++        switch self {
++        case let .header(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .item(_, title, gift):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.add(gift)
++            })
++        case let .empty(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        }
++    }
++}
++
++private func nyxaIncomingGiftFakePickerController(context: AccountContext) -> ViewController {
++    let accountPeerId = context.account.peerId
++    let isRussian = nyxaIsRussianLocale()
++    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    let observer = NyxaNotificationObserver(names: [NyxaIncomingGifts.didChangeNotification, NyxaFakeGifts.didChangeNotification], action: { value in
++        revision.set(value)
++    })
++
++    let arguments = NyxaIncomingGiftFakePickerArguments(add: { gift in
++        NyxaIncomingGifts.addToPool(accountPeerId: accountPeerId, gift: gift)
++    })
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        revision.get()
++    )
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let _ = observer
++        let poolSlugs = Set(NyxaIncomingGifts.pool(accountPeerId: accountPeerId).map { $0.slug })
++        var gifts: [StarGift.UniqueGift] = []
++        for entry in NyxaFakeGifts.entries(accountPeerId: accountPeerId) {
++            guard case let .unique(gift) = entry.gift else {
++                continue
++            }
++            if poolSlugs.contains(gift.slug) || gifts.contains(where: { $0.slug == gift.slug }) {
++                continue
++            }
++            gifts.append(gift)
++        }
++        var entries: [NyxaIncomingGiftFakePickerEntry] = [.header(isRussian ? "ВАШИ ФЕЙК ПОДАРКИ" : "YOUR FAKE GIFTS")]
++        for (index, gift) in gifts.enumerated() {
++            entries.append(.item(Int32(index), "\(gift.title) #\(gift.number)", gift))
++        }
++        if gifts.isEmpty {
++            entries.append(.empty(NyxaIncomingGifts.pool(accountPeerId: accountPeerId).isEmpty ? (isRussian ? "Здесь появятся NFT из ваших фейк подарков. Пока их нет." : "NFTs from your fake gifts show up here. There are none yet.") : (isRussian ? "Все ваши фейк NFT уже в наборе." : "All of your fake NFTs are already in the set.")))
++        }
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Из фейк подарков" : "From Fake Gifts"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
++        return (controllerState, (listState, arguments))
++    }
++
++    return ItemListController(context: context, state: signal)
++}
++
++private final class NyxaIncomingGiftPeersArguments {
++    let openRule: (Int64) -> Void
++    let addRule: (Int64, String) -> Void
++
++    init(openRule: @escaping (Int64) -> Void, addRule: @escaping (Int64, String) -> Void) {
++        self.openRule = openRule
++        self.addRule = addRule
++    }
++}
++
++private enum NyxaIncomingGiftPeersEntry: ItemListNodeEntry {
++    case header(String)
++    case peer(Int32, Int64, String, Int64?)
++    case footer(String)
++    case empty(String)
++
++    var section: ItemListSectionId {
++        return 0
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .header:
++            return 0
++        case let .peer(index, _, _, _):
++            return 1 + index
++        case .footer:
++            return 1000
++        case .empty:
++            return 1001
++        }
++    }
++
++    static func <(lhs: NyxaIncomingGiftPeersEntry, rhs: NyxaIncomingGiftPeersEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaIncomingGiftPeersArguments
++        switch self {
++        case let .header(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .peer(_, peerId, title, ruleId):
++            return ItemListCheckboxItem(presentationData: presentationData, systemStyle: .glass, title: title, style: .left, checked: ruleId != nil, zeroSeparatorInsets: false, sectionId: self.section, action: {
++                if let ruleId {
++                    arguments.openRule(ruleId)
++                } else {
++                    arguments.addRule(peerId, title)
++                }
++            })
++        case let .footer(text), let .empty(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        }
++    }
++}
++
++private func nyxaIncomingGiftPeersController(context: AccountContext) -> ViewController {
++    let accountPeerId = context.account.peerId
++    let isRussian = nyxaIsRussianLocale()
++    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    let observer = NyxaNotificationObserver(names: [NyxaIncomingGifts.didChangeNotification], action: { value in
++        revision.set(value)
++    })
++    var pushImpl: ((ViewController) -> Void)?
++
++    let arguments = NyxaIncomingGiftPeersArguments(openRule: { ruleId in
++        pushImpl?(nyxaIncomingGiftRuleController(context: context, ruleId: ruleId))
++    }, addRule: { peerIdValue, title in
++        let ruleId = NyxaIncomingGifts.addRule(accountPeerId: accountPeerId, peerId: PeerId(peerIdValue), peerTitle: title)
++        pushImpl?(nyxaIncomingGiftRuleController(context: context, ruleId: ruleId))
++    })
++
++    let peers: Signal<[EnginePeer], NoError> = context.engine.messages.chatList(group: .root, count: 300)
++    |> map { chatList -> [EnginePeer] in
++        var result: [EnginePeer] = []
++        var seen = Set<Int64>()
++        for item in chatList.items.reversed() {
++            if let peer = item.renderedPeer.peer, case let .user(user) = peer, user.botInfo == nil, user.id != accountPeerId, !user.id.isTelegramNotifications, !seen.contains(user.id.toInt64()) {
++                seen.insert(user.id.toInt64())
++                result.append(peer)
++            }
++        }
++        return result
++    }
++    |> take(1)
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        revision.get(),
++        peers
++    )
++    |> map { presentationData, _, peers -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let _ = observer
++        let rules = NyxaIncomingGifts.rules(accountPeerId: accountPeerId)
++        var entries: [NyxaIncomingGiftPeersEntry] = [.header(isRussian ? "С КЕМ ПРИХОДЯТ ПОДАРКИ" : "WHO GIFTS ARRIVE FROM")]
++        for (index, peer) in peers.enumerated() {
++            let title = peer.displayTitle(strings: presentationData.strings, displayOrder: presentationData.nameDisplayOrder)
++            let ruleId = rules.first(where: { $0.peerId == peer.id.toInt64() })?.id
++            entries.append(.peer(Int32(index), peer.id.toInt64(), title, ruleId))
++        }
++        if peers.isEmpty {
++            entries.append(.empty(isRussian ? "В списке чатов пока нет людей." : "There are no people in the chat list yet."))
++        }
++        entries.append(.footer(isRussian ? "Только личные чаты. Отметка показывает, что для этого чата уже настроены подарки." : "Private chats only. A checkmark shows that gifts are already set up for that chat."))
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Выбрать чат" : "Choose a Chat"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
++        return (controllerState, (listState, arguments))
++    }
++
++    let controller = ItemListController(context: context, state: signal)
++    pushImpl = { [weak controller] c in
++        controller?.push(c)
++    }
++    return controller
++}
++
++private final class NyxaIncomingGiftRuleArguments {
++    let selectGifts: () -> Void
++    let editCaption: () -> Void
++    let clearCaption: () -> Void
++    let setTrigger: (NyxaIncomingGiftTrigger) -> Void
++    let editKeyword: () -> Void
++    let editDelay: () -> Void
++    let toggleArm: () -> Void
++    let editCount: () -> Void
++    let setCountMode: (NyxaIncomingGiftCountMode) -> Void
++    let fireNow: () -> Void
++    let removeRule: () -> Void
++
++    init(selectGifts: @escaping () -> Void, editCaption: @escaping () -> Void, clearCaption: @escaping () -> Void, setTrigger: @escaping (NyxaIncomingGiftTrigger) -> Void, editKeyword: @escaping () -> Void, editDelay: @escaping () -> Void, toggleArm: @escaping () -> Void, editCount: @escaping () -> Void, setCountMode: @escaping (NyxaIncomingGiftCountMode) -> Void, fireNow: @escaping () -> Void, removeRule: @escaping () -> Void) {
++        self.selectGifts = selectGifts
++        self.editCaption = editCaption
++        self.clearCaption = clearCaption
++        self.setTrigger = setTrigger
++        self.editKeyword = editKeyword
++        self.editDelay = editDelay
++        self.toggleArm = toggleArm
++        self.editCount = editCount
++        self.setCountMode = setCountMode
++        self.fireNow = fireNow
++        self.removeRule = removeRule
++    }
++}
++
++private func nyxaIncomingGiftTriggerOrder(_ trigger: NyxaIncomingGiftTrigger) -> Int32 {
++    switch trigger {
++    case .onMessage:
++        return 0
++    case .onKeyword:
++        return 1
++    case .onVoice:
++        return 2
++    case .onSticker:
++        return 3
++    case .onMedia:
++        return 4
++    case .onOpen:
++        return 5
++    case .afterDelay:
++        return 6
++    case .random:
++        return 7
++    }
++}
++
++private enum NyxaIncomingGiftRuleEntry: ItemListNodeEntry {
++    case giftHeader(String)
++    case gifts(String, String)
++    case caption(String, String)
++    case captionClear(String)
++    case triggerHeader(String)
++    case trigger(NyxaIncomingGiftTrigger, String, Bool)
++    case keyword(String, String)
++    case triggerFooter(String)
++    case delay(String, String)
++    case arm(String)
++    case count(String, String)
++    case countMode(NyxaIncomingGiftCountMode, String, Bool)
++    case countFooter(String)
++    case fire(String)
++    case remove(String)
++
++    var section: ItemListSectionId {
++        switch self {
++        case .giftHeader, .gifts, .caption, .captionClear:
++            return 0
++        case .triggerHeader, .trigger, .keyword, .triggerFooter:
++            return 1
++        case .delay, .arm, .count, .countMode, .countFooter:
++            return 2
++        default:
++            return 3
++        }
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .giftHeader:
++            return 0
++        case .gifts:
++            return 1
++        case .caption:
++            return 2
++        case .captionClear:
++            return 3
++        case .triggerHeader:
++            return 10
++        case let .trigger(trigger, _, _):
++            return 11 + nyxaIncomingGiftTriggerOrder(trigger)
++        case .keyword:
++            return 20
++        case .triggerFooter:
++            return 21
++        case .delay:
++            return 30
++        case .arm:
++            return 31
++        case .count:
++            return 40
++        case let .countMode(mode, _, _):
++            return 41 + (mode == .random ? 0 : 1)
++        case .countFooter:
++            return 43
++        case .fire:
++            return 50
++        case .remove:
++            return 51
++        }
++    }
++
++    static func <(lhs: NyxaIncomingGiftRuleEntry, rhs: NyxaIncomingGiftRuleEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaIncomingGiftRuleArguments
++        switch self {
++        case let .giftHeader(text), let .triggerHeader(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .gifts(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.fakeGifts, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.selectGifts()
++            })
++        case let .caption(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.editCaption()
++            })
++        case let .captionClear(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.clearCaption()
++            })
++        case let .trigger(trigger, title, checked):
++            return ItemListCheckboxItem(presentationData: presentationData, systemStyle: .glass, title: title, style: .left, checked: checked, zeroSeparatorInsets: false, sectionId: self.section, action: {
++                arguments.setTrigger(trigger)
++            })
++        case let .keyword(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.editKeyword()
++            })
++        case let .triggerFooter(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        case let .delay(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.editDelay()
++            })
++        case let .count(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.editCount()
++            })
++        case let .countMode(mode, title, checked):
++            return ItemListCheckboxItem(presentationData: presentationData, systemStyle: .glass, title: title, style: .left, checked: checked, zeroSeparatorInsets: false, sectionId: self.section, action: {
++                arguments.setCountMode(mode)
++            })
++        case let .countFooter(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        case let .arm(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.toggleArm()
++            })
++        case let .fire(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.fireNow()
++            })
++        case let .remove(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .destructive, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.removeRule()
++            })
++        }
++    }
++}
++
++private func nyxaIncomingGiftRuleController(context: AccountContext, ruleId: Int64) -> ViewController {
++    let accountPeerId = context.account.peerId
++    let isRussian = nyxaIsRussianLocale()
++    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    let observer = NyxaNotificationObserver(names: [NyxaIncomingGifts.didChangeNotification], action: { value in
++        revision.set(value)
++    })
++    var pushImpl: ((ViewController) -> Void)?
++    var presentImpl: ((ViewController) -> Void)?
++    var popImpl: (() -> Void)?
++
++    let showAlert: (String) -> Void = { text in
++        nyxaShowIncomingGiftAlert(context: context, text: text, present: { controller in
++            presentImpl?(controller)
++        })
++    }
++
++    func update(_ f: (inout NyxaIncomingGiftRule) -> Void) {
++        guard var rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        f(&rule)
++        NyxaIncomingGifts.updateRule(rule, accountPeerId: accountPeerId)
++    }
++
++    let arguments = NyxaIncomingGiftRuleArguments(selectGifts: {
++        guard !NyxaIncomingGifts.pool(accountPeerId: accountPeerId).isEmpty else {
++            showAlert(isRussian ? "Сначала добавьте хотя бы один NFT на экране «Входящие подарки»." : "Add at least one NFT on the “Incoming Gifts” screen first.")
++            return
++        }
++        pushImpl?(nyxaIncomingGiftNFTSelectController(context: context, ruleId: ruleId))
++    }, editCaption: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        let prompt = promptController(context: context, text: isRussian ? "Описание подарка" : "Gift Caption", subtitle: isRussian ? "Текст появится под подарком. Чтобы убрать описание, очистите поле или нажмите «Убрать описание»." : "The text appears under the gift. To remove it, clear the field or tap “Remove Caption”.", value: rule.text, placeholder: isRussian ? "необязательно" : "optional", characterLimit: 200, apply: { value in
++            guard let value else {
++                return
++            }
++            let caption = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
++            update { rule in
++                rule.text = caption
++            }
++        })
++        presentImpl?(prompt)
++    }, clearCaption: {
++        update { rule in
++            rule.text = ""
++        }
++    }, setTrigger: { trigger in
++        var wasArmed = false
++        update { rule in
++            wasArmed = rule.armedAt != nil
++            rule.trigger = trigger
++            if trigger != .afterDelay {
++                rule.armedAt = nil
++            }
++        }
++        if wasArmed {
++            NyxaIncomingGifts.disarm(ruleId: ruleId, accountPeerId: accountPeerId)
++        }
++    }, editKeyword: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        let prompt = promptController(context: context, text: isRussian ? "Кодовое слово" : "Trigger Word", subtitle: isRussian ? "Подарок придёт после сообщения, в котором есть это слово. Регистр не важен." : "The gift arrives after a message that contains this word. Case doesn't matter.", value: rule.keyword, placeholder: isRussian ? "например: люблю" : "for example: love", characterLimit: 64, apply: { value in
++            guard let value else {
++                return
++            }
++            update { rule in
++                rule.keyword = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(64))
++            }
++        })
++        presentImpl?(prompt)
++    }, editDelay: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        let prompt = promptController(context: context, text: isRussian ? "Через сколько секунд" : "Delay in Seconds", subtitle: isRussian ? "От 5 до 3600 секунд. Отсчёт начнётся после нажатия «Запланировать»." : "From 5 to 3600 seconds. The countdown starts when you tap “Schedule”.", value: "\(rule.delay)", placeholder: "30", characterLimit: 4, apply: { value in
++            guard let value, let seconds = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
++                return
++            }
++            var restart = false
++            update { rule in
++                rule.delay = seconds
++                restart = rule.armedAt != nil
++            }
++            if restart {
++                NyxaIncomingGifts.arm(ruleId: ruleId, accountPeerId: accountPeerId)
++            }
++        })
++        presentImpl?(prompt)
++    }, toggleArm: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        if rule.armedAt != nil {
++            NyxaIncomingGifts.disarm(ruleId: ruleId, accountPeerId: accountPeerId)
++        } else {
++            var available = NyxaIncomingGifts.pool(accountPeerId: accountPeerId)
++            if !rule.slugs.isEmpty {
++                available = available.filter { rule.slugs.contains($0.slug) }
++            }
++            guard !available.isEmpty else {
++                showAlert(isRussian ? "Для этого чата не выбран ни один NFT из набора." : "No NFT from the set is picked for this chat.")
++                return
++            }
++            update { rule in
++                rule.trigger = .afterDelay
++            }
++            NyxaIncomingGifts.arm(ruleId: ruleId, accountPeerId: accountPeerId)
++        }
++    }, editCount: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        let subtitle: String
++        switch rule.countMode {
++        case .random:
++            subtitle = isRussian ? "От 1 до 5. Каждый раз число выбирается случайно: иногда один, иногда несколько подряд." : "From 1 to 5. The number is random every time: sometimes one, sometimes a few in a row."
++        case .exact:
++            subtitle = isRussian ? "От 1 до 5. Столько подарков будет приходить каждый раз, один за другим." : "From 1 to 5. That many gifts arrive every time, one after another."
++        }
++        let prompt = promptController(context: context, text: isRussian ? "Сколько подарков за раз" : "How Many Gifts at Once", subtitle: subtitle, value: "\(rule.maxCount)", placeholder: "3", characterLimit: 1, apply: { value in
++            guard let value, let count = Int32(value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
++                return
++            }
++            update { rule in
++                rule.maxCount = count
++            }
++        })
++        presentImpl?(prompt)
++    }, setCountMode: { mode in
++        update { rule in
++            rule.countMode = mode
++        }
++    }, fireNow: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        var available = NyxaIncomingGifts.pool(accountPeerId: accountPeerId)
++        if !rule.slugs.isEmpty {
++            available = available.filter { rule.slugs.contains($0.slug) }
++        }
++        guard !available.isEmpty else {
++            showAlert(isRussian ? "Сначала добавьте NFT и выберите хотя бы один для этого чата." : "Add an NFT and pick at least one for this chat first.")
++            return
++        }
++        NyxaIncomingGifts.fireNow(ruleId: ruleId, accountPeerId: accountPeerId)
++        showAlert(isRussian ? "Подарок отправлен в чат с «\(rule.peerTitle)»." : "The gift was sent to the chat with “\(rule.peerTitle)”.")
++    }, removeRule: {
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        let alert = textAlertController(context: context, title: rule.peerTitle, text: isRussian ? "Убрать этот чат из списка? Уже пришедшие подарки удалятся из чата." : "Remove this chat from the list? Gifts that already arrived will be deleted from the chat.", actions: [
++            TextAlertAction(type: .genericAction, title: isRussian ? "Отмена" : "Cancel", action: {}),
++            TextAlertAction(type: .destructiveAction, title: isRussian ? "Удалить" : "Delete", action: {
++                NyxaIncomingGifts.removeRule(id: ruleId, accountPeerId: accountPeerId)
++                popImpl?()
++            })
++        ])
++        presentImpl?(alert)
++    })
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        revision.get()
++    )
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let _ = observer
++        guard let rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Чат" : "Chat"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++            let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: [NyxaIncomingGiftRuleEntry](), style: .blocks, animateChanges: false)
++            return (controllerState, (listState, arguments))
++        }
++
++        let pool = NyxaIncomingGifts.pool(accountPeerId: accountPeerId)
++        let poolSlugs = Set(pool.map { $0.slug })
++        let selectedCount = rule.slugs.filter { poolSlugs.contains($0) }.count
++        let giftsLabel: String
++        if rule.slugs.isEmpty {
++            giftsLabel = isRussian ? "Любой из набора" : "Any From the Set"
++        } else {
++            giftsLabel = isRussian ? "Выбрано: \(selectedCount)" : "Picked: \(selectedCount)"
++        }
++
++        let triggerFooter: String
++        switch rule.trigger {
++        case .onMessage:
++            triggerFooter = isRussian ? "Напишите сообщение в этом чате — подарок придёт через 3–8 секунд, как будто собеседник отправил его сразу после вашего." : "Write a message in this chat and a gift arrives 3–8 seconds later, as if the other person sent it right after yours."
++        case .onKeyword:
++            if rule.keyword.isEmpty {
++                triggerFooter = isRussian ? "Задайте кодовое слово: подарок придёт после сообщения, в котором оно есть." : "Set a trigger word: the gift arrives after a message that contains it."
++            } else {
++                triggerFooter = isRussian ? "Напишите сообщение со словом «\(rule.keyword)» — подарок придёт через 3–8 секунд." : "Write a message with “\(rule.keyword)” and the gift arrives 3–8 seconds later."
++            }
++        case .onVoice:
++            triggerFooter = isRussian ? "Отправьте голосовое сообщение — подарок придёт через 3–8 секунд." : "Send a voice message and the gift arrives 3–8 seconds later."
++        case .onSticker:
++            triggerFooter = isRussian ? "Отправьте стикер или GIF — подарок придёт через 3–8 секунд." : "Send a sticker or a GIF and the gift arrives 3–8 seconds later."
++        case .onMedia:
++            triggerFooter = isRussian ? "Отправьте фото, видео или файл — подарок придёт через 3–8 секунд." : "Send a photo, a video or a file and the gift arrives 3–8 seconds later."
++        case .onOpen:
++            triggerFooter = isRussian ? "Откройте чат — подарок придёт через 4–12 секунд. Повторно не чаще раза в минуту." : "Open the chat and a gift arrives in 4–12 seconds. It doesn't repeat more than once a minute."
++        case .afterDelay:
++            if let armedAt = rule.armedAt {
++                let remaining = max(0, Int(armedAt) + Int(rule.delay) - Int(Date().timeIntervalSince1970))
++                triggerFooter = isRussian ? "Запланировано: подарок придёт через \(remaining) секунд. Можно закрыть настройки, но приложение должно оставаться открытым." : "Scheduled: the gift arrives in \(remaining) seconds. You can close Settings, but the app has to stay open."
++            } else if rule.lastFiredAt != nil {
++                triggerFooter = isRussian ? "Уже приходил. Нажмите «Запланировать», чтобы повторить." : "It has already arrived. Tap “Schedule” to repeat it."
++            } else {
++                triggerFooter = isRussian ? "Нажмите «Запланировать» — подарок придёт через \(rule.delay) секунд, даже если вы не пишете в этот чат." : "Tap “Schedule” and the gift arrives in \(rule.delay) seconds, even if you don't write in this chat."
++            }
++        case .random:
++            triggerFooter = isRussian ? "Напишите сообщение — подарок придёт в случайный момент, через 15–90 секунд." : "Write a message and the gift arrives at a random moment, 15–90 seconds later."
++        }
++
++        let armTitle: String
++        if rule.trigger == .afterDelay && rule.armedAt != nil {
++            armTitle = isRussian ? "Отменить запланированный подарок" : "Cancel the Scheduled Gift"
++        } else {
++            armTitle = isRussian ? "Запланировать через \(rule.delay) сек" : "Schedule in \(rule.delay) sec"
++        }
++
++        let captionLabel: String
++        if rule.text.isEmpty {
++            captionLabel = isRussian ? "Нет" : "None"
++        } else if rule.text.count > 36 {
++            captionLabel = String(rule.text.prefix(36)) + "…"
++        } else {
++            captionLabel = rule.text
++        }
++
++        var entries: [NyxaIncomingGiftRuleEntry] = [
++            .giftHeader(isRussian ? "ПОДАРКИ" : "GIFTS"),
++            .gifts(isRussian ? "Какие NFT приходят" : "Which NFTs Arrive", giftsLabel),
++            .caption(isRussian ? "Описание подарка" : "Gift Caption", captionLabel)
++        ]
++        if !rule.text.isEmpty {
++            entries.append(.captionClear(isRussian ? "Убрать описание" : "Remove Caption"))
++        }
++        entries.append(.triggerHeader(isRussian ? "КОГДА ПРИХОДИТ" : "WHEN IT ARRIVES"))
++        for trigger in NyxaIncomingGiftTrigger.allCases {
++            entries.append(.trigger(trigger, nyxaIncomingGiftTriggerTitle(trigger, isRussian: isRussian), rule.trigger == trigger))
++        }
++        if rule.trigger == .onKeyword {
++            entries.append(.keyword(isRussian ? "Кодовое слово" : "Trigger Word", rule.keyword.isEmpty ? (isRussian ? "Не задано" : "Not Set") : rule.keyword))
++        }
++        entries.append(.triggerFooter(triggerFooter))
++        if rule.trigger == .afterDelay {
++            entries.append(.delay(isRussian ? "Задержка" : "Delay", isRussian ? "\(rule.delay) сек" : "\(rule.delay) sec"))
++            entries.append(.arm(armTitle))
++        }
++        entries.append(.count(isRussian ? "Сколько подарков за раз" : "How Many Gifts at Once", (rule.countMode == .exact ? (isRussian ? "ровно " : "exactly ") : (isRussian ? "до " : "up to ")) + "\(rule.maxCount)"))
++        entries.append(.countMode(.random, isRussian ? "Случайно от 1 до \(rule.maxCount)" : "Random From 1 to \(rule.maxCount)", rule.countMode == .random))
++        entries.append(.countMode(.exact, isRussian ? "Всегда \(rule.maxCount) подряд" : "Always \(rule.maxCount) in a Row", rule.countMode == .exact))
++        entries.append(.countFooter(isRussian ? "Несколько подарков приходят один за другим с паузой в 2–5 секунд." : "Several gifts arrive one after another with a 2–5 second pause."))
++        entries.append(.fire(isRussian ? "Отправить сейчас" : "Send Now"))
++        entries.append(.remove(isRussian ? "Удалить чат из списка" : "Remove Chat From the List"))
++
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(rule.peerTitle), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
++        return (controllerState, (listState, arguments))
++    }
++
++    let controller = ItemListController(context: context, state: signal)
++    pushImpl = { [weak controller] c in
++        controller?.push(c)
++    }
++    presentImpl = { [weak controller] c in
++        controller?.present(c, in: .window(.root))
++    }
++    popImpl = { [weak controller] in
++        controller?.navigationController?.popViewController(animated: true)
++    }
++    return controller
++}
++
++private final class NyxaIncomingGiftNFTSelectArguments {
++    let toggle: (String) -> Void
++
++    init(toggle: @escaping (String) -> Void) {
++        self.toggle = toggle
++    }
++}
++
++private enum NyxaIncomingGiftNFTSelectEntry: ItemListNodeEntry {
++    case header(String)
++    case item(Int32, String, String, Bool)
++    case footer(String)
++
++    var section: ItemListSectionId {
++        return 0
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .header:
++            return 0
++        case let .item(index, _, _, _):
++            return 1 + index
++        case .footer:
++            return 1000
++        }
++    }
++
++    static func <(lhs: NyxaIncomingGiftNFTSelectEntry, rhs: NyxaIncomingGiftNFTSelectEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaIncomingGiftNFTSelectArguments
++        switch self {
++        case let .header(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .item(_, slug, title, checked):
++            return ItemListCheckboxItem(presentationData: presentationData, systemStyle: .glass, title: title, style: .left, checked: checked, zeroSeparatorInsets: false, sectionId: self.section, action: {
++                arguments.toggle(slug)
++            })
++        case let .footer(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        }
++    }
++}
++
++private func nyxaIncomingGiftNFTSelectController(context: AccountContext, ruleId: Int64) -> ViewController {
++    let accountPeerId = context.account.peerId
++    let isRussian = nyxaIsRussianLocale()
++    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    let observer = NyxaNotificationObserver(names: [NyxaIncomingGifts.didChangeNotification], action: { value in
++        revision.set(value)
++    })
++
++    let arguments = NyxaIncomingGiftNFTSelectArguments(toggle: { slug in
++        guard var rule = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId) else {
++            return
++        }
++        if let index = rule.slugs.firstIndex(of: slug) {
++            rule.slugs.remove(at: index)
++        } else {
++            rule.slugs.append(slug)
++        }
++        NyxaIncomingGifts.updateRule(rule, accountPeerId: accountPeerId)
++    })
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        revision.get()
++    )
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let _ = observer
++        let pool = NyxaIncomingGifts.pool(accountPeerId: accountPeerId)
++        let slugs = NyxaIncomingGifts.rule(id: ruleId, accountPeerId: accountPeerId)?.slugs ?? []
++        var entries: [NyxaIncomingGiftNFTSelectEntry] = [.header(isRussian ? "NFT ДЛЯ ЭТОГО ЧАТА" : "NFTS FOR THIS CHAT")]
++        for (index, nft) in pool.enumerated() {
++            entries.append(.item(Int32(index), nft.slug, nft.title, slugs.contains(nft.slug)))
++        }
++        if slugs.isEmpty {
++            entries.append(.footer(isRussian ? "Ничего не выбрано: в этом чате придёт любой NFT из набора, выбранный случайно." : "Nothing is picked: any NFT from the set will arrive in this chat, chosen at random."))
++        } else {
++            entries.append(.footer(isRussian ? "Приходят только отмеченные NFT, по одному случайному из списка. Если снять все отметки, снова будет приходить любой." : "Only the checked NFTs arrive, one random from the list. Uncheck them all to get any of them again."))
++        }
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Подарки чата" : "Chat Gifts"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
++        return (controllerState, (listState, arguments))
++    }
++
++    return ItemListController(context: context, state: signal)
 +}
 diff --git a/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoAvatarTransformContainerNode.swift b/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoAvatarTransformContainerNode.swift
 index 89dc09d0..1864ec51 100644
@@ -85704,18 +87440,19 @@ index 6039165a..69d46362 100644
                          self.state?.updated()
                      }
 diff --git a/submodules/TelegramUI/Sources/AccountContext.swift b/submodules/TelegramUI/Sources/AccountContext.swift
-index 77b372ba..4ac85148 100644
+index 77b372ba..6ade2523 100644
 --- a/submodules/TelegramUI/Sources/AccountContext.swift
 +++ b/submodules/TelegramUI/Sources/AccountContext.swift
-@@ -327,6 +327,7 @@ public final class AccountContextImpl: AccountContext {
+@@ -327,6 +327,8 @@ public final class AccountContextImpl: AccountContext {
          self.peerNameColors = PeerNameColors.with(availableReplyColors: availableReplyColors, availableProfileColors: availableProfileColors)
          self.audioTranscriptionTrial = AudioTranscription.TrialState.defaultValue
          self.isPremium = false
 +        NyxaLocalPremium.register(accountPeerId: account.peerId)
++        NyxaIncomingGifts.start(account: account)
          self.isFrozen = false
          
          self.downloadedMediaStoreManager = DownloadedMediaStoreManagerImpl(postbox: account.postbox, accountManager: sharedContext.accountManager)
-@@ -1009,6 +1010,35 @@ public final class AccountContextImpl: AccountContext {
+@@ -1009,6 +1011,35 @@ public final class AccountContextImpl: AccountContext {
      }
      
      public func requestCall(peerId: PeerId, isVideo: Bool, completion: @escaping () -> Void) {
@@ -85815,7 +87552,7 @@ index 89e8d45b..9df44b03 100644
              switch action {
              case .pause:
 diff --git a/submodules/TelegramUI/Sources/ChatController.swift b/submodules/TelegramUI/Sources/ChatController.swift
-index 88472a60..1ebb0756 100644
+index 88472a60..2da670b8 100644
 --- a/submodules/TelegramUI/Sources/ChatController.swift
 +++ b/submodules/TelegramUI/Sources/ChatController.swift
 @@ -315,6 +315,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
@@ -85864,7 +87601,18 @@ index 88472a60..1ebb0756 100644
                  if let _ = strongSelf.presentationInterfaceState.slowmodeState, strongSelf.presentationInterfaceState.subject != .scheduledMessages {
                      strongSelf.interfaceInteraction?.displaySlowmodeTooltip(sourceView, sourceRect)
                      return false
-@@ -9046,7 +9071,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+@@ -7846,6 +7871,10 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+         
+         self.didAppear = true
+         
++        if self.subject == nil, case let .peer(peerId) = self.chatLocation {
++            NyxaIncomingGifts.noteChatOpened(accountPeerId: self.context.account.peerId, peerId: peerId)
++        }
++        
+         self.chatDisplayNode.historyNode.experimentalSnapScrollToItem = false
+         self.chatDisplayNode.historyNode.canReadHistory.set(self.computedCanReadHistoryPromise.get())
+         self.chatDisplayNode.historyNode.areContentAnimationsEnabled = true
+@@ -9046,7 +9075,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                  }
              }
              
@@ -85873,7 +87621,7 @@ index 88472a60..1ebb0756 100644
                  var attributes = attributes
                  
                  if let sendPaidMessageStars = self.presentationInterfaceState.sendPaidMessageStars {
-@@ -11413,3 +11438,20 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+@@ -11413,3 +11442,20 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
          return self.chatDisplayNode.contentContainerNode
      }
  }
