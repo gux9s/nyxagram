@@ -81465,7 +81465,7 @@ new file mode 100644
 index 00000000..f29fba62
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/TelegramEngine/Payments/NyxaFakeGiftMessages.swift
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,236 @@
 +import Foundation
 +import Postbox
 +import SwiftSignalKit
@@ -81667,22 +81667,40 @@ index 00000000..f29fba62
 +    }
 +}
 +
-+// Fake craft: a plain fake gift becomes a collectible right away, without the Upgrade screen and without a charge
-+func _internal_nyxaCraftFakeGift(account: Account, reference: StarGiftReference) -> Signal<Bool, NoError> {
++// Craft: one to four collectibles of the same collection are melted into a single, better one. The inputs are
++// removed and the result is added on this device, and nothing is charged.
++public enum NyxaFakeCraftResult {
++    case crafted(StarGift.UniqueGift)
++    case invalid
++}
++
++func _internal_nyxaCraftFakeGifts(account: Account, references: [StarGiftReference]) -> Signal<NyxaFakeCraftResult, NoError> {
 +    let accountPeerId = account.peerId
-+    guard let entry = NyxaFakeGifts.entry(for: reference, accountPeerId: accountPeerId), case let .generic(base) = entry.gift else {
-+        return .single(false)
++    guard !references.isEmpty, references.count <= NyxaGiftCraft.maximumGiftCount else {
++        return .single(.invalid)
 +    }
-+    let entryId = entry.id
-+    return nyxaUpgradeVariants(account: account, giftId: base.id)
-+    |> mapToSignal { attributes -> Signal<Bool, NoError> in
-+        guard let unique = nyxaFakeUniqueGift(base: base, entry: entry, accountPeerId: accountPeerId, attributes: attributes, keepOriginalInfo: true) else {
-+            return .single(false)
++    var inputs: [StarGift.UniqueGift] = []
++    for reference in references {
++        guard let entry = NyxaFakeGifts.entry(for: reference, accountPeerId: accountPeerId), case let .unique(gift) = entry.gift else {
++            return .single(.invalid)
 +        }
-+        NyxaFakeHistory.record(accountPeerId: accountPeerId, kind: .upgrade, gift: .unique(unique), stars: 0, gramNanos: 0)
-+        return nyxaSaveFakeUniqueGift(account: account, entryId: entryId, unique: unique, accountPeerId: accountPeerId)
-+        |> map { _ in true }
++        inputs.append(gift)
 +    }
++    guard let crafted = NyxaGiftCraft.craft(inputs: inputs, accountPeerId: accountPeerId, forceBest: NyxaGiftRig.enabled) else {
++        return .single(.invalid)
++    }
++    var messageIds: [EngineMessage.Id] = []
++    for reference in references {
++        messageIds.append(contentsOf: NyxaFakeGifts.remove(reference: reference, accountPeerId: accountPeerId))
++    }
++    NyxaFakeGifts.add(gift: .unique(crafted), accountPeerId: accountPeerId)
++    NyxaFakeHistory.record(accountPeerId: accountPeerId, kind: .upgrade, gift: .unique(crafted), stars: 0, gramNanos: 0)
++    return account.postbox.transaction { transaction -> Void in
++        if !messageIds.isEmpty {
++            transaction.deleteMessages(messageIds, forEachMedia: nil)
++        }
++    }
++    |> map { _ in NyxaFakeCraftResult.crafted(crafted) }
 +}
 diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift b/submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift
 index 97a1546c..8114964a 100644
@@ -81932,7 +81950,7 @@ diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Payments/TelegramEng
 index e0a88728..6a1c4a6d 100644
 --- a/submodules/TelegramCore/Sources/TelegramEngine/Payments/TelegramEnginePayments.swift
 +++ b/submodules/TelegramCore/Sources/TelegramEngine/Payments/TelegramEnginePayments.swift
-@@ -70,6 +70,9 @@ public extension TelegramEngine {
+@@ -70,6 +70,9 @@
          }
          
          public func fetchBotPaymentForm(source: BotPaymentInvoiceSource, themeParams: [String: Any]?) -> Signal<BotPaymentForm, BotPaymentFormRequestError> {
@@ -81942,7 +81960,7 @@ index e0a88728..6a1c4a6d 100644
              return _internal_fetchBotPaymentForm(accountPeerId: self.account.peerId, postbox: self.account.postbox, network: self.account.network, source: source, themeParams: themeParams)
          }
          
-@@ -137,6 +140,18 @@ public extension TelegramEngine {
+@@ -137,6 +140,18 @@
              return StarsContext(account: self.account, ton: true)
          }
          
@@ -81954,8 +81972,8 @@ index e0a88728..6a1c4a6d 100644
 +            return _internal_nyxaDeleteFakeGiftMessages(account: self.account, ids: ids)
 +        }
 +        
-+        public func nyxaCraftFakeGift(reference: StarGiftReference) -> Signal<Bool, NoError> {
-+            return _internal_nyxaCraftFakeGift(account: self.account, reference: reference)
++        public func nyxaCraftFakeGifts(references: [StarGiftReference]) -> Signal<NyxaFakeCraftResult, NoError> {
++            return _internal_nyxaCraftFakeGifts(account: self.account, references: references)
 +        }
 +        
          public func peerStarsRevenueContext(peerId: EnginePeer.Id, ton: Bool) -> StarsRevenueStatsContext {
@@ -83620,7 +83638,7 @@ new file mode 100644
 index 00000000..57e439e3
 --- /dev/null
 +++ b/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/NyxaSettingsController.swift
-@@ -0,0 +1,3672 @@
+@@ -0,0 +1,3762 @@
 +import Foundation
 +import UIKit
 +import Display
@@ -87186,34 +87204,70 @@ index 00000000..57e439e3
 +
 +// MARK: - Fake craft
 +
-+private final class NyxaFakeCraftArguments {
-+    let craft: (Int64) -> Void
++private final class NyxaFakeCraftSelection {
++    var giftId: Int64?
++    var ids: [Int64] = []
++}
 +
-+    init(craft: @escaping (Int64) -> Void) {
++private final class NyxaFakeCraftArguments {
++    let toggle: (Int64, Int64) -> Void
++    let craft: () -> Void
++
++    init(toggle: @escaping (Int64, Int64) -> Void, craft: @escaping () -> Void) {
++        self.toggle = toggle
 +        self.craft = craft
 +    }
 +}
 +
++// The row title inside a collection: the number and the model the gift currently has
++private func nyxaCraftGiftTitle(_ gift: StarGift.UniqueGift) -> String {
++    var model = ""
++    for attribute in gift.attributes {
++        if case let .model(name, _, _, _) = attribute {
++            model = name
++            break
++        }
++    }
++    if model.isEmpty {
++        return "#\(gift.number)"
++    }
++    return "#\(gift.number) · \(model)"
++}
++
 +private enum NyxaFakeCraftEntry: ItemListNodeEntry {
 +    case header(String)
-+    case gift(Int32, Int64, String, String)
++    case collection(Int32, String)
++    case gift(Int32, Int64, Int64, String, String)
 +    case empty(String)
++    case summary(String)
++    case action(String)
 +    case footer(String)
 +
 +    var section: ItemListSectionId {
-+        return 0
++        switch self {
++        case .header, .collection, .gift, .empty:
++            return 0
++        default:
++            return 1
++        }
 +    }
 +
 +    var stableId: Int32 {
 +        switch self {
 +        case .header:
 +            return 0
-+        case let .gift(index, _, _, _):
-+            return 1 + index
++        case let .collection(id, _):
++            return 1 + id
++        case let .gift(id, _, _, _, _):
++            return 1 + id
 +        case .empty:
-+            return 100
++            return 900000
++        case .summary:
++            return 900001
++        case .action:
++            return 900002
 +        case .footer:
-+            return 101
++            return 900003
 +        }
 +    }
 +
@@ -87224,14 +87278,18 @@ index 00000000..57e439e3
 +    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
 +        let arguments = arguments as! NyxaFakeCraftArguments
 +        switch self {
-+        case let .header(text):
++        case let .header(text), let .collection(_, text):
 +            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
-+        case let .gift(_, entryId, title, label):
++        case let .gift(_, entryId, giftId, title, label):
 +            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftCraft, title: title, label: label, sectionId: self.section, style: .blocks, action: {
-+                arguments.craft(entryId)
++                arguments.toggle(entryId, giftId)
 +            })
-+        case let .empty(text), let .footer(text):
++        case let .empty(text), let .summary(text), let .footer(text):
 +            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        case let .action(title):
++            return ItemListActionItem(presentationData: presentationData, systemStyle: .glass, title: title, kind: .generic, alignment: .natural, sectionId: self.section, style: .blocks, action: {
++                arguments.craft()
++            })
 +        }
 +    }
 +}
@@ -87239,21 +87297,52 @@ index 00000000..57e439e3
 +private func nyxaFakeCraftController(context: AccountContext) -> ViewController {
 +    let accountPeerId = context.account.peerId
 +    let isRussian = nyxaIsRussianLocale()
++    let selection = NyxaFakeCraftSelection()
++    // the observer counts from one, so manual refreshes start far above it and never collapse into a repeated value
++    var manualRevision: Int = 1000000
 +    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    var presentImpl: ((ViewController) -> Void)?
 +    let observer = NyxaNotificationObserver(names: [NyxaFakeGifts.didChangeNotification, NyxaGiftRig.didChangeNotification], action: { value in
 +        revision.set(value)
 +    })
-+    var presentImpl: ((ViewController) -> Void)?
 +
-+    let arguments = NyxaFakeCraftArguments(craft: { entryId in
-+        let reference = StarGiftReference.peer(peerId: accountPeerId, id: entryId)
-+        let _ = context.engine.payments.nyxaCraftFakeGift(reference: reference).start(next: { success in
++    let arguments = NyxaFakeCraftArguments(toggle: { entryId, giftId in
++        // crafting only ever mixes gifts of one collection, so picking another one starts the selection over
++        if selection.giftId != giftId {
++            selection.giftId = giftId
++            selection.ids = []
++        }
++        if let index = selection.ids.firstIndex(of: entryId) {
++            selection.ids.remove(at: index)
++        } else if selection.ids.count < NyxaGiftCraft.maximumGiftCount {
++            selection.ids.append(entryId)
++        }
++        if selection.ids.isEmpty {
++            selection.giftId = nil
++        }
++        manualRevision += 1
++        revision.set(manualRevision)
++    }, craft: {
++        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++        guard !selection.ids.isEmpty else {
++            presentImpl?(textAlertController(context: context, title: nil, text: isRussian ? "Выберите от одного до четырёх подарков одной коллекции." : "Select one to four gifts of the same collection.", actions: [
++                TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})
++            ]))
++            return
++        }
++        let references = selection.ids.map { StarGiftReference.peer(peerId: accountPeerId, id: $0) }
++        let _ = context.engine.payments.nyxaCraftFakeGifts(references: references).start(next: { result in
 +            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
 +            let text: String
-+            if success {
-+                text = isRussian ? "Готово: подарок стал коллекционным." : "Done: the gift is collectible now."
-+            } else {
-+                text = isRussian ? "Не получилось. Нужен интернет, чтобы загрузить варианты." : "That didn't work. An internet connection is needed to load the variants."
++            switch result {
++            case let .crafted(gift):
++                text = isRussian ? "Готово: «\(gift.title) #\(gift.number)»." : "Done: \u{201C}\(gift.title) #\(gift.number)\u{201D}."
++                selection.ids = []
++                selection.giftId = nil
++                manualRevision += 1
++                revision.set(manualRevision)
++            case .invalid:
++                text = isRussian ? "Не получилось: нужны коллекционные подарки одной коллекции, от одного до четырёх." : "That didn't work: collectible gifts of one collection are needed, one to four."
 +            }
 +            presentImpl?(textAlertController(context: context, title: nil, text: text, actions: [
 +                TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})
@@ -87267,21 +87356,40 @@ index 00000000..57e439e3
 +    )
 +    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
 +        let _ = observer
-+        var entries: [NyxaFakeCraftEntry] = [.header(isRussian ? "ОБЫЧНЫЕ ФЕЙК ПОДАРКИ" : "PLAIN FAKE GIFTS")]
-+        var plain: [(Int64, String)] = []
++        // one group per collection, since crafting never mixes them
++        var groups: [(giftId: Int64, title: String, gifts: [(id: Int64, gift: StarGift.UniqueGift)])] = []
 +        for entry in NyxaFakeGifts.entries(accountPeerId: accountPeerId) {
-+            if case let .generic(gift) = entry.gift {
-+                plain.append((entry.id, gift.title ?? "Gift"))
++            guard case let .unique(gift) = entry.gift else {
++                continue
++            }
++            if let index = groups.firstIndex(where: { $0.giftId == gift.giftId }) {
++                groups[index].gifts.append((entry.id, gift))
++            } else {
++                groups.append((gift.giftId, gift.title, [(entry.id, gift)]))
 +            }
 +        }
-+        if plain.isEmpty {
-+            entries.append(.empty(isRussian ? "Обычных фейк подарков нет. Сначала возьмите подарок в разделе «Fake подарки»." : "There are no plain fake gifts. Take one in Fake Gifts first."))
++        var counter: Int32 = 0
++        var entries: [NyxaFakeCraftEntry] = [.header(isRussian ? "КОЛЛЕКЦИОННЫЕ ПОДАРКИ" : "COLLECTIBLE GIFTS")]
++        if groups.isEmpty {
++            entries.append(.empty(isRussian ? "Коллекционных подарков нет. Сначала улучшите подарок в разделе «Fake подарки»: крафт работает только с ними." : "There are no collectible gifts yet. Upgrade a gift in Fake Gifts first: crafting only works with those."))
 +        } else {
-+            for (index, item) in plain.enumerated() {
-+                entries.append(.gift(Int32(index), item.0, item.1, isRussian ? "Скрафтить" : "Craft"))
++            for group in groups {
++                counter += 1
++                entries.append(.collection(counter, group.title))
++                for item in group.gifts {
++                    counter += 1
++                    let selected = selection.ids.contains(item.id)
++                    entries.append(.gift(counter, item.id, group.giftId, nyxaCraftGiftTitle(item.gift), selected ? "\u{2713}" : ""))
++                }
++            }
++            if !selection.ids.isEmpty {
++                let count = selection.ids.count
++                let permille = NyxaGiftCraft.chancePermille(selectedCount: count, matchingCount: count)
++                entries.append(.summary(isRussian ? "Выбрано \(count) из \(NyxaGiftCraft.maximumGiftCount) · общий узор или фон сохранится с шансом \(permille / 10)%" : "\(count) of \(NyxaGiftCraft.maximumGiftCount) selected · a shared pattern or backdrop survives with a \(permille / 10)% chance"))
++                entries.append(.action(isRussian ? "Скрафтить" : "Craft"))
 +            }
 +        }
-+        entries.append(.footer(isRussian ? "Крафт делает из обычного подарка коллекционный: модель, узор, фон и номер берутся из «Подкрута подарков», если он включён. Всё остаётся на этом устройстве." : "Craft turns a plain gift into a collectible: the model, pattern, backdrop and number come from Gift Rig when it's on. Everything stays on this device."))
++        entries.append(.footer(isRussian ? "Крафт берёт от одного до четырёх коллекционных подарков одной коллекции и делает из них один, лучше: модель остаётся от первого, а узор и фон выбираются из набора. Чем больше подарков содержат вариант, тем выше шанс, что он останется, — четыре подарка гарантируют один общий. С «Подкрутом подарков» всегда берётся лучший вариант. Ничего не списывается, всё остаётся на этом устройстве." : "Craft takes one to four collectible gifts of one collection and turns them into a single, better one: the model comes from the first gift, the pattern and the backdrop are drawn from the pool. The more gifts carry a variant, the likelier it survives, and four gifts always keep one. With Gift Rig the best variant is taken every time. Nothing is charged and everything stays on this device."))
 +        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Фейк крафт" : "Fake Craft"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
 +        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
 +        return (controllerState, (listState, arguments))
@@ -88594,6 +88702,186 @@ index 38152a40..395341a2 100644
      let translationConfiguration = TranslationConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
      var chatTranslationAvailable = true
      switch translationConfiguration.auto {
+diff --git a/submodules/TelegramCore/Sources/Nyxa/NyxaGiftCraft.swift b/submodules/TelegramCore/Sources/Nyxa/NyxaGiftCraft.swift
+new file mode 100644
+index 00000000..00000000
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Nyxa/NyxaGiftCraft.swift
+@@ -0,0 +1,174 @@
++import Foundation
++
++// Crafting the way the app itself does it, but on this device: one to four collectibles of the same collection go
++// in and a single, better collectible comes out. The odds are the ones the app uses: an attribute that shows up in
++// more of the selected gifts is far more likely to survive the craft, and four gifts always keep one.
++public enum NyxaGiftCraft {
++    public static let maximumGiftCount: Int = 4
++    // [selected gifts - 1][how many of them share the attribute - 1], in permille
++    public static let chancePermilles: [[Int32]] = [[90], [80, 200], [70, 190, 460], [60, 180, 450, 1000]]
++
++    public struct Candidate {
++        public let attribute: StarGift.UniqueGift.Attribute
++        // how many of the selected gifts carry this backdrop or pattern
++        public let matchingCount: Int
++        public let permille: Int32
++        public let isBackdrop: Bool
++    }
++
++    private enum AttributeKey: Hashable {
++        case backdrop(Int32)
++        case pattern(Int64)
++    }
++
++    // The chance that an attribute survives: the more of the selected gifts have it, the higher it is
++    public static func chancePermille(selectedCount: Int, matchingCount: Int) -> Int32 {
++        guard selectedCount >= 1, selectedCount <= maximumGiftCount, matchingCount >= 1 else {
++            return 0
++        }
++        let row = chancePermilles[selectedCount - 1]
++        return row[min(matchingCount, row.count) - 1]
++    }
++
++    // A backdrop is identified by its id and a pattern by its file, so the same one coming from two gifts counts once
++    private static func key(for attribute: StarGift.UniqueGift.Attribute) -> AttributeKey? {
++        switch attribute {
++        case let .backdrop(_, id, _, _, _, _, _):
++            return .backdrop(id)
++        case let .pattern(_, file, _):
++            return .pattern(file.fileId.id)
++        case .model, .originalInfo:
++            return nil
++        }
++    }
++
++    // Every backdrop and pattern the selected gifts bring in, with how many of them carry it
++    public static func candidates(in gifts: [StarGift.UniqueGift]) -> [Candidate] {
++        guard !gifts.isEmpty else {
++            return []
++        }
++        var order: [AttributeKey] = []
++        var attributeByKey: [AttributeKey: StarGift.UniqueGift.Attribute] = [:]
++        var counts: [AttributeKey: Int] = [:]
++        for gift in gifts {
++            var seenInGift: Set<AttributeKey> = []
++            for attribute in gift.attributes {
++                guard let key = key(for: attribute), !seenInGift.contains(key) else {
++                    continue
++                }
++                seenInGift.insert(key)
++                if attributeByKey[key] == nil {
++                    attributeByKey[key] = attribute
++                    order.append(key)
++                }
++                counts[key] = (counts[key] ?? 0) + 1
++            }
++        }
++        var result: [Candidate] = []
++        for key in order {
++            guard let attribute = attributeByKey[key], let matchingCount = counts[key] else {
++                continue
++            }
++            var isBackdrop = false
++            if case .backdrop = attribute {
++                isBackdrop = true
++            }
++            result.append(Candidate(attribute: attribute, matchingCount: matchingCount, permille: chancePermille(selectedCount: gifts.count, matchingCount: matchingCount), isBackdrop: isBackdrop))
++        }
++        // the safest one first, so the best of them wins whenever several survive
++        return result.sorted { lhs, rhs in
++            if lhs.permille != rhs.permille {
++                return lhs.permille > rhs.permille
++            }
++            return lhs.matchingCount > rhs.matchingCount
++        }
++    }
++
++    // Melts the gifts into one: the model of the first gift is kept and the backdrop and the pattern are rolled from
++    // the pool. With the rig on the best one of each is taken instead of rolling.
++    public static func craft(inputs: [StarGift.UniqueGift], accountPeerId: EnginePeer.Id, forceBest: Bool) -> StarGift.UniqueGift? {
++        guard !inputs.isEmpty, inputs.count <= maximumGiftCount else {
++            return nil
++        }
++        let giftId = inputs[0].giftId
++        guard inputs.allSatisfy({ $0.giftId == giftId }) else {
++            return nil
++        }
++        var model: StarGift.UniqueGift.Attribute?
++        var ownBackdrop: StarGift.UniqueGift.Attribute?
++        var ownPattern: StarGift.UniqueGift.Attribute?
++        for attribute in inputs[0].attributes {
++            switch attribute {
++            case .model:
++                model = attribute
++            case .backdrop:
++                ownBackdrop = attribute
++            case .pattern:
++                ownPattern = attribute
++            case .originalInfo:
++                break
++            }
++        }
++        guard let model else {
++            return nil
++        }
++
++        var backdrop: StarGift.UniqueGift.Attribute?
++        var pattern: StarGift.UniqueGift.Attribute?
++        for candidate in candidates(in: inputs) {
++            let survives = forceBest || Int.random(in: 0 ..< 1000) < Int(candidate.permille)
++            guard survives else {
++                continue
++            }
++            if candidate.isBackdrop {
++                if backdrop == nil {
++                    backdrop = candidate.attribute
++                }
++            } else if pattern == nil {
++                pattern = candidate.attribute
++            }
++        }
++
++        // nothing survived: the result simply stays what the first gift was
++        let supply: Int32
++        if inputs[0].availability.total > 0 {
++            supply = inputs[0].availability.total
++        } else {
++            supply = 100000
++        }
++        let number = NyxaGiftRig.giftNumber(supply: supply)
++        let title = inputs[0].title
++        let slugTitle = title.filter { $0.isLetter || $0.isNumber }
++        var attributes: [StarGift.UniqueGift.Attribute] = [model]
++        if let backdrop = backdrop ?? ownBackdrop {
++            attributes.append(backdrop)
++        }
++        if let pattern = pattern ?? ownPattern {
++            attributes.append(pattern)
++        }
++        attributes.append(.originalInfo(senderPeerId: accountPeerId, recipientPeerId: accountPeerId, date: Int32(Date().timeIntervalSince1970), text: nil, entities: nil))
++        return StarGift.UniqueGift(
++            id: Int64.random(in: 1 ... Int64.max),
++            giftId: giftId,
++            title: title,
++            number: number,
++            slug: (slugTitle.isEmpty ? "Gift" : slugTitle) + "-\(number)",
++            owner: .peerId(accountPeerId),
++            attributes: attributes,
++            availability: StarGift.UniqueGift.Availability(issued: number, total: supply),
++            giftAddress: nil,
++            resellAmounts: nil,
++            resellForTonOnly: false,
++            releasedBy: inputs[0].releasedBy,
++            valueAmount: nil,
++            valueCurrency: nil,
++            valueUsdAmount: nil,
++            flags: [],
++            themePeerId: nil,
++            peerColor: nil,
++            hostPeerId: nil,
++            minOfferStars: nil,
++            craftChancePermille: nil
++        )
++    }
++}
 diff --git a/submodules/TelegramCore/Sources/Nyxa/NyxaGiftRig.swift b/submodules/TelegramCore/Sources/Nyxa/NyxaGiftRig.swift
 new file mode 100644
 index 00000000..00000000
