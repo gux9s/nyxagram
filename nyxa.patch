@@ -79238,7 +79238,7 @@ new file mode 100644
 index 00000000..c3f4ed4e
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/Nyxa/NyxaIncomingGifts.swift
-@@ -0,0 +1,618 @@
+@@ -0,0 +1,674 @@
 +import Foundation
 +import Postbox
 +import SwiftSignalKit
@@ -79572,13 +79572,22 @@ index 00000000..c3f4ed4e
 +        return max(1, min(maximumCount, count))
 +    }
 +    
-+    // Called when an outgoing message has been stored: schedules the rules of that chat
-+    static func noteOwnMessage(accountPeerId: PeerId, peerId: PeerId, text: String?, isVoice: Bool, isSticker: Bool, isMedia: Bool) {
++    // Called from the chat screen when one of your own messages appears: this is when the "after I write", keyword,
++    // voice, sticker and media rules are checked. A message counts once, however often its bubble is set up again.
++    public static func noteOwnMessage(accountPeerId: PeerId, peerId: PeerId, messageId: Int32, text: String?, isVoice: Bool, isSticker: Bool, isMedia: Bool, timestamp: Int32) {
 +        guard peerId.namespace == Namespaces.Peer.CloudUser else {
 +            return
 +        }
 +        DispatchQueue.main.async {
 +            guard enabled else {
++                return
++            }
++            guard noteSeenMessage(peerId: peerId, messageId: messageId) else {
++                return
++            }
++            // only a message that has just been sent counts, so scrolling back through old ones never fires a rule
++            let age = Int32(Date().timeIntervalSince1970) - timestamp
++            guard age >= -5 && age <= 300 else {
 +                return
 +            }
 +            let peerRules = rules(accountPeerId: accountPeerId).filter { $0.peerId == peerId.toInt64() }
@@ -79599,6 +79608,25 @@ index 00000000..c3f4ed4e
 +                }
 +            }
 +        }
++    }
++    
++    private static var seenMessageKeys: [String] = []
++    
++    // Returns false when this message has already been handled
++    private static func noteSeenMessage(peerId: PeerId, messageId: Int32) -> Bool {
++        let key = "\(peerId.toInt64()):\(messageId)"
++        lock.lock()
++        defer {
++            lock.unlock()
++        }
++        if seenMessageKeys.contains(key) {
++            return false
++        }
++        seenMessageKeys.append(key)
++        if seenMessageKeys.count > 300 {
++            seenMessageKeys.removeFirst(seenMessageKeys.count - 300)
++        }
++        return true
 +    }
 +    
 +    // Called from the chat screen: "when I open the chat" rules fire once, with a cooldown against
@@ -79813,6 +79841,7 @@ index 00000000..c3f4ed4e
 +        }
 +        var remaining = available
 +        var chosen: [NyxaIncomingGiftNFT] = []
++        let rigged = NyxaGiftRig.enabled && NyxaGiftRig.firstNFTOnly
 +        for _ in 0 ..< count {
 +            if remaining.isEmpty {
 +                remaining = available
@@ -79820,7 +79849,11 @@ index 00000000..c3f4ed4e
 +            guard !remaining.isEmpty else {
 +                break
 +            }
-+            chosen.append(remaining.remove(at: Int.random(in: 0 ..< remaining.count)))
++            if rigged {
++                chosen.append(remaining.removeFirst())
++            } else {
++                chosen.append(remaining.remove(at: Int.random(in: 0 ..< remaining.count)))
++            }
 +        }
 +        
 +        if rule.trigger == .afterDelay {
@@ -79857,12 +79890,35 @@ index 00000000..c3f4ed4e
 +        }
 +    }
 +}
++
++// What a message carries, for the incoming gift triggers
++public extension Message {
++    var nyxaIncomingGiftKinds: (isVoice: Bool, isSticker: Bool, isMedia: Bool) {
++        var isVoice = false
++        var isSticker = false
++        var isMedia = false
++        for media in self.media {
++            if let file = media as? TelegramMediaFile {
++                if file.isVoice {
++                    isVoice = true
++                } else if file.isSticker || file.isAnimatedSticker {
++                    isSticker = true
++                } else {
++                    isMedia = true
++                }
++            } else if media is TelegramMediaImage {
++                isMedia = true
++            }
++        }
++        return (isVoice, isSticker, isMedia)
++    }
++}
 diff --git a/submodules/TelegramCore/Sources/Nyxa/NyxaSettings.swift b/submodules/TelegramCore/Sources/Nyxa/NyxaSettings.swift
 new file mode 100644
 index 00000000..1baae57d
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/Nyxa/NyxaSettings.swift
-@@ -0,0 +1,1244 @@
+@@ -0,0 +1,1250 @@
 +import Foundation
 +import Postbox
 +import SwiftSignalKit
@@ -80469,9 +80525,15 @@ index 00000000..1baae57d
 +        }
 +    }
 +    
-+    // Fake gifts land in the profile as plain, not upgraded gifts that can be upgraded there
++    // Fake gifts land in the profile as plain, not upgraded gifts that can be upgraded there.
++    // On by default, so every gift can be taken not upgraded and improved the way Telegram does it.
 +    public static var notUpgraded: Bool {
-+        get { return UserDefaults.standard.bool(forKey: "nyxa.fakeNotUpgraded") }
++        get {
++            if UserDefaults.standard.object(forKey: "nyxa.fakeNotUpgraded") == nil {
++                return true
++            }
++            return UserDefaults.standard.bool(forKey: "nyxa.fakeNotUpgraded")
++        }
 +        set {
 +            UserDefaults.standard.set(newValue, forKey: "nyxa.fakeNotUpgraded")
 +            NotificationCenter.default.post(name: didChangeNotification, object: nil)
@@ -81127,38 +81189,6 @@ index a8b125e8..3848eb2f 100644
          if transformGroupingKeysWithPeerId {
              updatedMessage = updatedMessage.withUpdatedGroupingKey { groupingKey -> Int64? in
                  if let groupingKey = groupingKey {
-@@ -1467,6 +1476,31 @@ func enqueueMessages(transaction: Transaction, account: Account, peerId: PeerId,
-         for hashtag in addedHashtags {
-             addRecentlyUsedHashtag(transaction: transaction, string: hashtag)
-         }
-+        if storeMessages.contains(where: { $0.id.namespace == Namespaces.Message.Cloud }) {
-+            var nyxaText: String?
-+            var nyxaIsVoice = false
-+            var nyxaIsSticker = false
-+            var nyxaIsMedia = false
-+            for storedMessage in storeMessages {
-+                if nyxaText == nil && !storedMessage.text.isEmpty {
-+                    nyxaText = storedMessage.text
-+                }
-+                for media in storedMessage.media {
-+                    if let file = media as? TelegramMediaFile {
-+                        if file.isVoice {
-+                            nyxaIsVoice = true
-+                        } else if file.isSticker || file.isAnimatedSticker {
-+                            nyxaIsSticker = true
-+                        } else {
-+                            nyxaIsMedia = true
-+                        }
-+                    } else if media is TelegramMediaImage {
-+                        nyxaIsMedia = true
-+                    }
-+                }
-+            }
-+            NyxaIncomingGifts.noteOwnMessage(accountPeerId: account.peerId, peerId: peerId, text: nyxaText, isVoice: nyxaIsVoice, isSticker: nyxaIsSticker, isMedia: nyxaIsMedia)
-+        }
-         return messageIds
-     } else {
-         return []
 diff --git a/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift b/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
 index ba4569ed..a9535b5b 100644
 --- a/submodules/TelegramCore/Sources/State/AccountStateManagementUtils.swift
@@ -81435,7 +81465,7 @@ new file mode 100644
 index 00000000..f29fba62
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/TelegramEngine/Payments/NyxaFakeGiftMessages.swift
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,218 @@
 +import Foundation
 +import Postbox
 +import SwiftSignalKit
@@ -81543,6 +81573,72 @@ index 00000000..f29fba62
 +    }
 +}
 +
++// Builds the collectible that a plain fake gift turns into. The variants come from the Upgrade screen; with the
++// rig on, Settings pins the model, the pattern, the backdrop and the number instead of leaving them to chance.
++private func nyxaFakeUniqueGift(base: StarGift.Gift, entry: NyxaFakeGiftEntry, accountPeerId: PeerId, attributes: [StarGift.UniqueGift.Attribute], keepOriginalInfo: Bool) -> StarGift.UniqueGift? {
++    let models = attributes.filter { if case .model = $0 { return true } else { return false } }
++    let patterns = attributes.filter { if case .pattern = $0 { return true } else { return false } }
++    let backdrops = attributes.filter { if case .backdrop = $0 { return true } else { return false } }
++    guard let model = NyxaGiftRig.pick(models, index: NyxaGiftRig.model), let pattern = NyxaGiftRig.pick(patterns, index: NyxaGiftRig.pattern), let backdrop = NyxaGiftRig.pick(backdrops, index: NyxaGiftRig.backdrop) else {
++        return nil
++    }
++    var uniqueAttributes: [StarGift.UniqueGift.Attribute] = [model, pattern, backdrop]
++    if keepOriginalInfo {
++        uniqueAttributes.append(.originalInfo(senderPeerId: accountPeerId, recipientPeerId: accountPeerId, date: entry.date, text: nil, entities: nil))
++    }
++    
++    let supply: Int32
++    if let total = base.availability?.total, total > 0 {
++        supply = total
++    } else {
++        supply = 100000
++    }
++    let number = NyxaGiftRig.giftNumber(supply: supply)
++    let title = base.title ?? "Gift"
++    let slugTitle = title.filter { $0.isLetter || $0.isNumber }
++    return StarGift.UniqueGift(
++        id: Int64.random(in: 1 ... Int64.max),
++        giftId: base.id,
++        title: title,
++        number: number,
++        slug: (slugTitle.isEmpty ? "Gift" : slugTitle) + "-\(number)",
++        owner: .peerId(accountPeerId),
++        attributes: uniqueAttributes,
++        availability: StarGift.UniqueGift.Availability(issued: number, total: supply),
++        giftAddress: nil,
++        resellAmounts: nil,
++        resellForTonOnly: false,
++        releasedBy: base.releasedBy,
++        valueAmount: nil,
++        valueCurrency: nil,
++        valueUsdAmount: nil,
++        flags: [],
++        themePeerId: nil,
++        peerColor: nil,
++        hostPeerId: nil,
++        minOfferStars: nil,
++        craftChancePermille: nil
++    )
++}
++
++// Writes the collectible back into the fake gift list and into the "purchased gift" message in Saved Messages
++private func nyxaSaveFakeUniqueGift(account: Account, entryId: Int64, unique: StarGift.UniqueGift, accountPeerId: PeerId) -> Signal<Void, NoError> {
++    NyxaFakeGifts.replaceGift(entryId: entryId, gift: .unique(unique), accountPeerId: accountPeerId)
++    return account.postbox.transaction { transaction -> Void in
++        guard let entry = NyxaFakeGifts.entries(accountPeerId: accountPeerId).first(where: { $0.id == entryId }), let localId = entry.messageId else {
++            return
++        }
++        let messageId = MessageId(peerId: accountPeerId, namespace: Namespaces.Message.Local, id: localId)
++        guard let message = transaction.getMessage(messageId) else {
++            return
++        }
++        let media: [Media] = [TelegramMediaAction(action: nyxaGiftAction(gift: entry.gift, accountPeerId: accountPeerId))]
++        transaction.updateMessage(messageId, update: { _ in
++            return .update(StoreMessage(id: message.id, customStableId: nil, globallyUniqueId: message.globallyUniqueId, groupingKey: message.groupingKey, threadId: message.threadId, timestamp: message.timestamp, flags: StoreMessageFlags(message.flags), tags: message.tags, globalTags: message.globalTags, localTags: message.localTags, forwardInfo: nil, authorId: message.author?.id, text: message.text, attributes: message.attributes, media: media))
++        })
++    }
++}
++
 +func _internal_nyxaUpgradeFakeGift(account: Account, reference: StarGiftReference, keepOriginalInfo: Bool) -> Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError> {
 +    let accountPeerId = account.peerId
 +    guard let entry = NyxaFakeGifts.entry(for: reference, accountPeerId: accountPeerId), case let .generic(base) = entry.gift else {
@@ -81552,76 +81648,40 @@ index 00000000..f29fba62
 +    return nyxaUpgradeVariants(account: account, giftId: base.id)
 +    |> castError(UpgradeStarGiftError.self)
 +    |> mapToSignal { attributes -> Signal<ProfileGiftsContext.State.StarGift, UpgradeStarGiftError> in
-+        let models = attributes.filter { if case .model = $0 { return true } else { return false } }
-+        let patterns = attributes.filter { if case .pattern = $0 { return true } else { return false } }
-+        let backdrops = attributes.filter { if case .backdrop = $0 { return true } else { return false } }
-+        guard let model = models.randomElement(), let pattern = patterns.randomElement(), let backdrop = backdrops.randomElement() else {
++        guard let unique = nyxaFakeUniqueGift(base: base, entry: entry, accountPeerId: accountPeerId, attributes: attributes, keepOriginalInfo: keepOriginalInfo) else {
 +            return .fail(.generic)
 +        }
-+        var uniqueAttributes: [StarGift.UniqueGift.Attribute] = [model, pattern, backdrop]
-+        if keepOriginalInfo {
-+            uniqueAttributes.append(.originalInfo(senderPeerId: accountPeerId, recipientPeerId: accountPeerId, date: entry.date, text: nil, entities: nil))
-+        }
-+        
-+        let supply: Int32
-+        if let total = base.availability?.total, total > 0 {
-+            supply = total
-+        } else {
-+            supply = 100000
-+        }
-+        let number = Int32.random(in: 1 ... supply)
-+        let title = base.title ?? "Gift"
-+        let slugTitle = title.filter { $0.isLetter || $0.isNumber }
-+        let unique = StarGift.UniqueGift(
-+            id: Int64.random(in: 1 ... Int64.max),
-+            giftId: base.id,
-+            title: title,
-+            number: number,
-+            slug: (slugTitle.isEmpty ? "Gift" : slugTitle) + "-\(number)",
-+            owner: .peerId(accountPeerId),
-+            attributes: uniqueAttributes,
-+            availability: StarGift.UniqueGift.Availability(issued: number, total: supply),
-+            giftAddress: nil,
-+            resellAmounts: nil,
-+            resellForTonOnly: false,
-+            releasedBy: base.releasedBy,
-+            valueAmount: nil,
-+            valueCurrency: nil,
-+            valueUsdAmount: nil,
-+            flags: [],
-+            themePeerId: nil,
-+            peerColor: nil,
-+            hostPeerId: nil,
-+            minOfferStars: nil,
-+            craftChancePermille: nil
-+        )
 +        let upgradePrice = base.upgradeStars ?? 0
 +        if !NyxaSettings.spendFakeStars(upgradePrice) {
 +            return .fail(.generic)
 +        }
 +        NyxaFakeHistory.record(accountPeerId: accountPeerId, kind: .upgrade, gift: .unique(unique), stars: upgradePrice, gramNanos: 0)
-+        NyxaFakeGifts.replaceGift(entryId: entryId, gift: .unique(unique), accountPeerId: accountPeerId)
-+        guard let updated = NyxaFakeGifts.entries(accountPeerId: accountPeerId).first(where: { $0.id == entryId }) else {
-+            return .fail(.generic)
-+        }
-+        let result = NyxaFakeGifts.stateGift(entry: updated, accountPeerId: accountPeerId, fromPeer: nil)
-+        return account.postbox.transaction { transaction -> Void in
-+            guard let localId = updated.messageId else {
-+                return
-+            }
-+            let messageId = MessageId(peerId: accountPeerId, namespace: Namespaces.Message.Local, id: localId)
-+            guard let message = transaction.getMessage(messageId) else {
-+                return
-+            }
-+            let media: [Media] = [TelegramMediaAction(action: nyxaGiftAction(gift: updated.gift, accountPeerId: accountPeerId))]
-+            transaction.updateMessage(messageId, update: { _ in
-+                return .update(StoreMessage(id: message.id, customStableId: nil, globallyUniqueId: message.globallyUniqueId, groupingKey: message.groupingKey, threadId: message.threadId, timestamp: message.timestamp, flags: StoreMessageFlags(message.flags), tags: message.tags, globalTags: message.globalTags, localTags: message.localTags, forwardInfo: nil, authorId: message.author?.id, text: message.text, attributes: message.attributes, media: media))
-+            })
-+        }
++        return nyxaSaveFakeUniqueGift(account: account, entryId: entryId, unique: unique, accountPeerId: accountPeerId)
 +        |> castError(UpgradeStarGiftError.self)
 +        |> map { _ -> ProfileGiftsContext.State.StarGift in
-+            return result
++            if let updated = NyxaFakeGifts.entries(accountPeerId: accountPeerId).first(where: { $0.id == entryId }) {
++                return NyxaFakeGifts.stateGift(entry: updated, accountPeerId: accountPeerId, fromPeer: nil)
++            }
++            return NyxaFakeGifts.stateGift(entry: NyxaFakeGiftEntry(id: entryId, gift: .unique(unique), date: entry.date, messageId: entry.messageId), accountPeerId: accountPeerId, fromPeer: nil)
 +        }
++    }
++}
++
++// Fake craft: a plain fake gift becomes a collectible right away, without the Upgrade screen and without a charge
++func _internal_nyxaCraftFakeGift(account: Account, reference: StarGiftReference) -> Signal<Bool, NoError> {
++    let accountPeerId = account.peerId
++    guard let entry = NyxaFakeGifts.entry(for: reference, accountPeerId: accountPeerId), case let .generic(base) = entry.gift else {
++        return .single(false)
++    }
++    let entryId = entry.id
++    return nyxaUpgradeVariants(account: account, giftId: base.id)
++    |> mapToSignal { attributes -> Signal<Bool, NoError> in
++        guard let unique = nyxaFakeUniqueGift(base: base, entry: entry, accountPeerId: accountPeerId, attributes: attributes, keepOriginalInfo: true) else {
++            return .single(false)
++        }
++        NyxaFakeHistory.record(accountPeerId: accountPeerId, kind: .upgrade, gift: .unique(unique), stars: 0, gramNanos: 0)
++        return nyxaSaveFakeUniqueGift(account: account, entryId: entryId, unique: unique, accountPeerId: accountPeerId)
++        |> map { _ in true }
 +    }
 +}
 diff --git a/submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift b/submodules/TelegramCore/Sources/TelegramEngine/Payments/StarGifts.swift
@@ -81882,7 +81942,7 @@ index e0a88728..6a1c4a6d 100644
              return _internal_fetchBotPaymentForm(accountPeerId: self.account.peerId, postbox: self.account.postbox, network: self.account.network, source: source, themeParams: themeParams)
          }
          
-@@ -137,6 +140,14 @@ public extension TelegramEngine {
+@@ -137,6 +140,18 @@ public extension TelegramEngine {
              return StarsContext(account: self.account, ton: true)
          }
          
@@ -81892,6 +81952,10 @@ index e0a88728..6a1c4a6d 100644
 +        
 +        public func nyxaDeleteFakeGiftMessages(ids: [EngineMessage.Id]) -> Signal<Never, NoError> {
 +            return _internal_nyxaDeleteFakeGiftMessages(account: self.account, ids: ids)
++        }
++        
++        public func nyxaCraftFakeGift(reference: StarGiftReference) -> Signal<Bool, NoError> {
++            return _internal_nyxaCraftFakeGift(account: self.account, reference: reference)
 +        }
 +        
          public func peerStarsRevenueContext(peerId: EnginePeer.Id, ton: Bool) -> StarsRevenueStatsContext {
@@ -82074,25 +82138,6 @@ index 75135098..2aad3202 100644
      public static let dataAndStorage = renderSettingsIcon(name: "Item List/Icons/Data", backgroundColors: [colorGreen])
      public static let appearance = renderSettingsIcon(name: "Item List/Icons/Appearance", backgroundColors: [colorLightBlue])
      public static let language = renderSettingsIcon(name: "Item List/Icons/Language", backgroundColors: [colorPurple])
-diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
-index 8d111582..bb99d6ae 100644
---- a/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
-+++ b/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
-@@ -2829,7 +2829,13 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
-                     attributedString = mutableString
-                     viaSuffix = botString
-                 } else if let authorNameString = authorNameString, let authorNameColor = authorNameColor {
--                    attributedString = NSAttributedString(string: authorNameString, font: nameFont, textColor: authorNameColor)
-+                    if let effectiveAuthor, NyxaUsers.isKnown(peerId: effectiveAuthor.id) {
-+                        let mutableString = NSMutableAttributedString(attributedString: NSAttributedString(string: authorNameString, font: nameFont, textColor: authorNameColor))
-+                        mutableString.append(NSAttributedString(string: " · Nyxagram", font: nameFont, textColor: authorNameColor.withAlphaComponent(0.55)))
-+                        attributedString = mutableString
-+                    } else {
-+                        attributedString = NSAttributedString(string: authorNameString, font: nameFont, textColor: authorNameColor)
-+                    }
-                 } else if let inlineBotNameString = inlineBotNameString {
-                     let bodyAttributes = MarkdownAttributeSet(font: inlineBotPrefixFont, textColor: inlineBotNameColor)
-                     let boldAttributes = MarkdownAttributeSet(font: nameFont, textColor: inlineBotNameColor)
 diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/StringForMessageTimestampStatus.swift b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/StringForMessageTimestampStatus.swift
 index ad79b915..a22f290c 100644
 --- a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/StringForMessageTimestampStatus.swift
@@ -82121,7 +82166,7 @@ diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/C
 index edc022de..54acda59 100644
 --- a/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift
 +++ b/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift
-@@ -691,6 +691,45 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
+@@ -691,6 +691,49 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
      
      open func setupItem(_ item: ChatMessageItem, synchronousLoad: Bool) {
          self.item = item
@@ -82131,6 +82176,10 @@ index edc022de..54acda59 100644
 +            NyxaUsers.noteMessage(text: message.text, authorId: message.author?.id, accountPeerId: item.context.account.peerId)
 +            if let author = message.author as? TelegramUser, author.id != item.context.account.peerId {
 +                NyxaPeerHistory.note(user: author)
++            }
++            if !message.flags.contains(.Incoming), message.author?.id == item.context.account.peerId, message.id.namespace == Namespaces.Message.Cloud {
++                let kinds = message.nyxaIncomingGiftKinds
++                NyxaIncomingGifts.noteOwnMessage(accountPeerId: item.context.account.peerId, peerId: message.id.peerId, messageId: message.id.id, text: message.text, isVoice: kinds.isVoice, isSticker: kinds.isSticker, isMedia: kinds.isMedia, timestamp: message.timestamp)
 +            }
 +        case let .group(messages):
 +            for (message, _, _, _, _) in messages {
@@ -82364,7 +82413,7 @@ index 7a84f1c1..4b2f30b9 100644
                              }
                          })
 +            } else if let reference = subject.arguments?.reference, NyxaFakeGifts.isFake(reference) {
-+                let title = nyxaIsRussianLocale() ? "Фейк-подарок Nyxagram · Убрать" : "Nyxagram fake gift · Remove"
++                let title = nyxaIsRussianLocale() ? "Убрать из профиля" : "Remove From Profile"
 +                buttonComponent = ButtonComponent(
 +                        background: buttonBackground,
 +                        content: AnyComponentWithIdentity(
@@ -83571,7 +83620,7 @@ new file mode 100644
 index 00000000..57e439e3
 --- /dev/null
 +++ b/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/NyxaSettingsController.swift
-@@ -0,0 +1,3350 @@
+@@ -0,0 +1,3672 @@
 +import Foundation
 +import UIKit
 +import Display
@@ -83872,6 +83921,8 @@ index 00000000..57e439e3
 +    static let demoPremium = renderNyxaSettingsIcon(systemName: "sparkles", backgroundColors: [UIColor(rgb: 0xC36BFF), UIColor(rgb: 0x8A2BE2)])
 +    static let fakeLevel = renderNyxaSettingsIcon(systemName: "chart.bar.fill", backgroundColors: [UIColor(rgb: 0xFFD54F), UIColor(rgb: 0xFF9500)])
 +    static let fakeGifts = renderNyxaSettingsIcon(systemName: "gift.fill", backgroundColors: [UIColor(rgb: 0xC36BFF), UIColor(rgb: 0x8A2BE2)])
++    static let giftRig = renderNyxaSettingsIcon(systemName: "slider.horizontal.3", backgroundColors: [UIColor(rgb: 0x6C8CFF), UIColor(rgb: 0x3A5BFF)])
++    static let giftCraft = renderNyxaSettingsIcon(systemName: "hammer.fill", backgroundColors: [UIColor(rgb: 0xFFB340), UIColor(rgb: 0xFF6B00)])
 +    static let incomingGifts = renderNyxaSettingsIcon(systemName: "gift.circle.fill", backgroundColors: [UIColor(rgb: 0xFF6B8A), UIColor(rgb: 0xC9184A)])
 +    static let autocorrect = renderNyxaSettingsIcon(systemName: "textformat.abc", backgroundColors: [UIColor(rgb: 0xFFB25B), UIColor(rgb: 0xFF9500)])
 +    static let deviceTranslation = renderNyxaSettingsIcon(systemName: "character.bubble.fill", backgroundColors: [UIColor(rgb: 0x5BE07A), UIColor(rgb: 0x34C759)])
@@ -84659,13 +84710,17 @@ index 00000000..57e439e3
 +    let toggleLevel: (Bool) -> Void
 +    let updateLevel: (Int32) -> Void
 +    let toggleDemoPremium: (Bool) -> Void
++    let openRig: () -> Void
++    let openCraft: () -> Void
 +
-+    init(toggle: @escaping (Bool) -> Void, removeAll: @escaping () -> Void, toggleLevel: @escaping (Bool) -> Void, updateLevel: @escaping (Int32) -> Void, toggleDemoPremium: @escaping (Bool) -> Void) {
++    init(toggle: @escaping (Bool) -> Void, removeAll: @escaping () -> Void, toggleLevel: @escaping (Bool) -> Void, updateLevel: @escaping (Int32) -> Void, toggleDemoPremium: @escaping (Bool) -> Void, openRig: @escaping () -> Void, openCraft: @escaping () -> Void) {
 +        self.toggle = toggle
 +        self.removeAll = removeAll
 +        self.toggleLevel = toggleLevel
 +        self.updateLevel = updateLevel
 +        self.toggleDemoPremium = toggleDemoPremium
++        self.openRig = openRig
++        self.openCraft = openCraft
 +    }
 +}
 +
@@ -84680,6 +84735,8 @@ index 00000000..57e439e3
 +    case demoHeader(String)
 +    case demoPremium(String, String, Bool)
 +    case demoFooter(String)
++    case rig(String, String)
++    case craft(String, String)
 +
 +    var section: ItemListSectionId {
 +        switch self {
@@ -84716,6 +84773,10 @@ index 00000000..57e439e3
 +            return 8
 +        case .demoFooter:
 +            return 9
++        case .rig:
++            return 10
++        case .craft:
++            return 11
 +        }
 +    }
 +
@@ -84754,6 +84815,14 @@ index 00000000..57e439e3
 +            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.demoPremium, title: title, text: text, value: value, sectionId: self.section, style: .blocks, updated: { value in
 +                arguments.toggleDemoPremium(value)
 +            })
++        case let .rig(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftRig, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.openRig()
++            })
++        case let .craft(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftCraft, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.openCraft()
++            })
 +        }
 +    }
 +}
@@ -84765,6 +84834,7 @@ index 00000000..57e439e3
 +
 +private func nyxaFakeGiftsController(context: AccountContext) -> ViewController {
 +    let isRussian = nyxaIsRussianLocale()
++    var pushImpl: ((ViewController) -> Void)?
 +    let enabledPromise = ValuePromise<Bool>(NyxaFakeGifts.enabled, ignoreRepeated: true)
 +    let demoPremiumPromise = ValuePromise<Bool>(NyxaAppearanceSettings.demoPremium, ignoreRepeated: true)
 +    let levelPromise = ValuePromise<NyxaFakeLevelState>(NyxaFakeLevelState(enabled: NyxaAppearanceSettings.fakeLevelEnabled, level: NyxaAppearanceSettings.fakeLevel), ignoreRepeated: true)
@@ -84785,6 +84855,10 @@ index 00000000..57e439e3
 +    }, toggleDemoPremium: { value in
 +        NyxaAppearanceSettings.demoPremium = value
 +        demoPremiumPromise.set(value)
++    }, openRig: {
++        pushImpl?(nyxaGiftRigController(context: context))
++    }, openCraft: {
++        pushImpl?(nyxaFakeCraftController(context: context))
 +    })
 +
 +    let signal = combineLatest(queue: .mainQueue(),
@@ -84796,7 +84870,7 @@ index 00000000..57e439e3
 +    |> map { presentationData, enabled, level, demoPremium -> (ItemListControllerState, (ItemListNodeState, Any)) in
 +        var entries: [NyxaFakeGiftsEntry] = [
 +            .toggle(isRussian ? "Fake подарки" : "Fake Gifts", isRussian ? "Подарки без трат, только у вас" : "Gifts that cost nothing, only you see them", enabled),
-+            .footer(isRussian ? "Отправьте себе любой подарок или откройте любой NFT и нажмите «Купить»: он появится в вашем профиле, а звёзды не спишутся. Подарки хранятся только на этом устройстве и видны только вам, друзьям их подарить нельзя. В углу каждого стоит маленькое лого Nyxagram, чтобы его не выдали за настоящий." : "Send yourself any gift or open any NFT and tap \u{201C}Buy\u{201D}: it appears in your profile and no stars are spent. These gifts are stored on this device only and only you can see them; they can't be given to friends. Each has a small Nyxagram logo in the corner so it can't pass for a real one."),
++            .footer(isRussian ? "Отправьте себе любой подарок или откройте любой NFT и нажмите «Купить»: он появится в вашем профиле, а звёзды не спишутся. Подарки хранятся только на этом устройстве и видны только вам, друзьям их подарить нельзя." : "Send yourself any gift or open any NFT and tap \u{201C}Buy\u{201D}: it appears in your profile and no stars are spent. These gifts are stored on this device only and only you can see them; they can't be given to friends."),
 +            .removeAll(isRussian ? "Удалить все фейк подарки" : "Remove All Fake Gifts"),
 +            .levelHeader(isRussian ? "ФЕЙК УРОВЕНЬ" : "FAKE LEVEL"),
 +            .levelToggle(isRussian ? "Фейк уровень" : "Fake Level", isRussian ? "Уровень рядом со статусом в профиле" : "A level next to your status in your profile", level.enabled)
@@ -84808,12 +84882,18 @@ index 00000000..57e439e3
 +        entries.append(.demoHeader(isRussian ? "ДЕМО-РЕЖИМ" : "DEMO MODE"))
 +        entries.append(.demoPremium(isRussian ? "Nyxa Premium (демо)" : "Nyxa Premium (demo)", isRussian ? "Значок Nyxagram рядом с именем" : "A Nyxagram badge next to your name", demoPremium))
 +        entries.append(.demoFooter(isRussian ? "Ставит рядом с вашим именем в профиле значок с лого Nyxagram. Это не Premium: платные функции он не открывает." : "Puts a Nyxagram logo badge next to your name in your profile. It isn't Premium and unlocks no paid features."))
++        entries.append(.rig(isRussian ? "Подкрут подарков" : "Gift Rig", ""))
++        entries.append(.craft(isRussian ? "Фейк крафт" : "Fake Craft", ""))
 +        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Fake подарки" : "Fake Gifts"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
 +        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false)
 +        return (controllerState, (listState, arguments))
 +    }
 +
-+    return ItemListController(context: context, state: signal)
++    let controller = ItemListController(context: context, state: signal)
++    pushImpl = { [weak controller] c in
++        controller?.push(c)
++    }
++    return controller
 +}
 +
 +// A screen with one switch and a note under it, for the modules that have nothing else to set
@@ -86922,6 +87002,297 @@ index 00000000..57e439e3
 +
 +    return ItemListController(context: context, state: signal)
 +}
++
++// MARK: - Gift rig
++
++private struct NyxaGiftRigState: Equatable {
++    var enabled: Bool
++    var model: Int32
++    var pattern: Int32
++    var backdrop: Int32
++    var number: Int32
++    var firstNFT: Bool
++}
++
++private func nyxaGiftRigState() -> NyxaGiftRigState {
++    return NyxaGiftRigState(enabled: NyxaGiftRig.enabled, model: NyxaGiftRig.model, pattern: NyxaGiftRig.pattern, backdrop: NyxaGiftRig.backdrop, number: NyxaGiftRig.number, firstNFT: NyxaGiftRig.firstNFTOnly)
++}
++
++private func nyxaRigVariantLabel(_ value: Int32, isRussian: Bool) -> String {
++    if value <= 0 {
++        return isRussian ? "Случайно" : "Random"
++    }
++    return "№\(value)"
++}
++
++private func nyxaRigNumberLabel(_ value: Int32, isRussian: Bool) -> String {
++    if value <= 0 {
++        return isRussian ? "Случайно" : "Random"
++    }
++    return "\(value)"
++}
++
++private final class NyxaGiftRigArguments {
++    let toggle: (Bool) -> Void
++    let cycleModel: () -> Void
++    let cyclePattern: () -> Void
++    let cycleBackdrop: () -> Void
++    let cycleNumber: () -> Void
++    let toggleFirstNFT: (Bool) -> Void
++
++    init(toggle: @escaping (Bool) -> Void, cycleModel: @escaping () -> Void, cyclePattern: @escaping () -> Void, cycleBackdrop: @escaping () -> Void, cycleNumber: @escaping () -> Void, toggleFirstNFT: @escaping (Bool) -> Void) {
++        self.toggle = toggle
++        self.cycleModel = cycleModel
++        self.cyclePattern = cyclePattern
++        self.cycleBackdrop = cycleBackdrop
++        self.cycleNumber = cycleNumber
++        self.toggleFirstNFT = toggleFirstNFT
++    }
++}
++
++private enum NyxaGiftRigEntry: ItemListNodeEntry {
++    case toggle(String, String, Bool)
++    case variantsHeader(String)
++    case model(String, String)
++    case pattern(String, String)
++    case backdrop(String, String)
++    case number(String, String)
++    case variantsFooter(String)
++    case incomingHeader(String)
++    case firstNFT(String, String, Bool)
++    case footer(String)
++
++    var section: ItemListSectionId {
++        switch self {
++        case .toggle, .variantsHeader, .model, .pattern, .backdrop, .number, .variantsFooter:
++            return 0
++        default:
++            return 1
++        }
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .toggle:
++            return 0
++        case .variantsHeader:
++            return 1
++        case .model:
++            return 2
++        case .pattern:
++            return 3
++        case .backdrop:
++            return 4
++        case .number:
++            return 5
++        case .variantsFooter:
++            return 6
++        case .incomingHeader:
++            return 10
++        case .firstNFT:
++            return 11
++        case .footer:
++            return 12
++        }
++    }
++
++    static func <(lhs: NyxaGiftRigEntry, rhs: NyxaGiftRigEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaGiftRigArguments
++        switch self {
++        case let .toggle(title, text, value):
++            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftRig, title: title, text: text, value: value, sectionId: self.section, style: .blocks, updated: { value in
++                arguments.toggle(value)
++            })
++        case let .variantsHeader(text), let .incomingHeader(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .model(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftRig, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.cycleModel()
++            })
++        case let .pattern(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftRig, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.cyclePattern()
++            })
++        case let .backdrop(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftRig, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.cycleBackdrop()
++            })
++        case let .number(title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.fakeStars, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.cycleNumber()
++            })
++        case let .firstNFT(title, text, value):
++            return ItemListSwitchItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.incomingGifts, title: title, text: text, value: value, sectionId: self.section, style: .blocks, updated: { value in
++                arguments.toggleFirstNFT(value)
++            })
++        case let .variantsFooter(text), let .footer(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        }
++    }
++}
++
++private func nyxaGiftRigController(context: AccountContext) -> ViewController {
++    let isRussian = nyxaIsRussianLocale()
++    let promise = ValuePromise<NyxaGiftRigState>(nyxaGiftRigState(), ignoreRepeated: true)
++
++    let arguments = NyxaGiftRigArguments(toggle: { value in
++        NyxaGiftRig.enabled = value
++        promise.set(nyxaGiftRigState())
++    }, cycleModel: {
++        NyxaGiftRig.model = NyxaGiftRig.model >= NyxaGiftRig.maximumVariant ? 0 : NyxaGiftRig.model + 1
++        promise.set(nyxaGiftRigState())
++    }, cyclePattern: {
++        NyxaGiftRig.pattern = NyxaGiftRig.pattern >= NyxaGiftRig.maximumVariant ? 0 : NyxaGiftRig.pattern + 1
++        promise.set(nyxaGiftRigState())
++    }, cycleBackdrop: {
++        NyxaGiftRig.backdrop = NyxaGiftRig.backdrop >= NyxaGiftRig.maximumVariant ? 0 : NyxaGiftRig.backdrop + 1
++        promise.set(nyxaGiftRigState())
++    }, cycleNumber: {
++        NyxaGiftRig.number = NyxaGiftRig.nextNumber(after: NyxaGiftRig.number)
++        promise.set(nyxaGiftRigState())
++    }, toggleFirstNFT: { value in
++        NyxaGiftRig.firstNFTOnly = value
++        promise.set(nyxaGiftRigState())
++    })
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        promise.get()
++    )
++    |> map { presentationData, state -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let entries: [NyxaGiftRigEntry] = [
++            .toggle(isRussian ? "Подкрут подарков" : "Gift Rig", isRussian ? "Вместо случайности вы выбираете, что выпадет" : "You pick what comes out instead of leaving it to chance", state.enabled),
++            .variantsHeader(isRussian ? "УЛУЧШЕНИЕ И КРАФТ" : "UPGRADE AND CRAFT"),
++            .model(isRussian ? "Модель" : "Model", nyxaRigVariantLabel(state.model, isRussian: isRussian)),
++            .pattern(isRussian ? "Узор" : "Pattern", nyxaRigVariantLabel(state.pattern, isRussian: isRussian)),
++            .backdrop(isRussian ? "Фон" : "Backdrop", nyxaRigVariantLabel(state.backdrop, isRussian: isRussian)),
++            .number(isRussian ? "Номер подарка" : "Gift Number", nyxaRigNumberLabel(state.number, isRussian: isRussian)),
++            .variantsFooter(isRussian ? "Нажимайте на строку, чтобы перебрать варианты: «Случайно» оставляет выбор приложению. Номер — любой в пределах тиража." : "Tap a row to cycle through the variants: Random leaves the choice to the app. The number is any within the collection."),
++            .incomingHeader(isRussian ? "ВХОДЯЩИЕ ПОДАРКИ" : "INCOMING GIFTS"),
++            .firstNFT(isRussian ? "Всегда первый подарок из набора" : "Always the First Gift in the Set", isRussian ? "Приходит верхний NFT списка, а не случайный" : "The top NFT of the list arrives instead of a random one", state.firstNFT),
++            .footer(isRussian ? "Работает вместе с «Fake подарки» и «Входящие подарки». Всё остаётся на этом устройстве." : "Works together with Fake Gifts and Incoming Gifts. Everything stays on this device.")
++        ]
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Подкрут подарков" : "Gift Rig"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: false)
++        return (controllerState, (listState, arguments))
++    }
++
++    return ItemListController(context: context, state: signal)
++}
++
++// MARK: - Fake craft
++
++private final class NyxaFakeCraftArguments {
++    let craft: (Int64) -> Void
++
++    init(craft: @escaping (Int64) -> Void) {
++        self.craft = craft
++    }
++}
++
++private enum NyxaFakeCraftEntry: ItemListNodeEntry {
++    case header(String)
++    case gift(Int32, Int64, String, String)
++    case empty(String)
++    case footer(String)
++
++    var section: ItemListSectionId {
++        return 0
++    }
++
++    var stableId: Int32 {
++        switch self {
++        case .header:
++            return 0
++        case let .gift(index, _, _, _):
++            return 1 + index
++        case .empty:
++            return 100
++        case .footer:
++            return 101
++        }
++    }
++
++    static func <(lhs: NyxaFakeCraftEntry, rhs: NyxaFakeCraftEntry) -> Bool {
++        return lhs.stableId < rhs.stableId
++    }
++
++    func item(presentationData: ItemListPresentationData, arguments: Any) -> ListViewItem {
++        let arguments = arguments as! NyxaFakeCraftArguments
++        switch self {
++        case let .header(text):
++            return ItemListSectionHeaderItem(presentationData: presentationData, text: text, sectionId: self.section)
++        case let .gift(_, entryId, title, label):
++            return ItemListDisclosureItem(presentationData: presentationData, systemStyle: .glass, icon: NyxaIcons.giftCraft, title: title, label: label, sectionId: self.section, style: .blocks, action: {
++                arguments.craft(entryId)
++            })
++        case let .empty(text), let .footer(text):
++            return ItemListTextItem(presentationData: presentationData, text: .plain(text), sectionId: self.section)
++        }
++    }
++}
++
++private func nyxaFakeCraftController(context: AccountContext) -> ViewController {
++    let accountPeerId = context.account.peerId
++    let isRussian = nyxaIsRussianLocale()
++    let revision = ValuePromise<Int>(0, ignoreRepeated: true)
++    let observer = NyxaNotificationObserver(names: [NyxaFakeGifts.didChangeNotification, NyxaGiftRig.didChangeNotification], action: { value in
++        revision.set(value)
++    })
++    var presentImpl: ((ViewController) -> Void)?
++
++    let arguments = NyxaFakeCraftArguments(craft: { entryId in
++        let reference = StarGiftReference.peer(peerId: accountPeerId, id: entryId)
++        let _ = context.engine.payments.nyxaCraftFakeGift(reference: reference).start(next: { success in
++            let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++            let text: String
++            if success {
++                text = isRussian ? "Готово: подарок стал коллекционным." : "Done: the gift is collectible now."
++            } else {
++                text = isRussian ? "Не получилось. Нужен интернет, чтобы загрузить варианты." : "That didn't work. An internet connection is needed to load the variants."
++            }
++            presentImpl?(textAlertController(context: context, title: nil, text: text, actions: [
++                TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})
++            ]))
++        })
++    })
++
++    let signal = combineLatest(queue: .mainQueue(),
++        context.sharedContext.presentationData,
++        revision.get()
++    )
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let _ = observer
++        var entries: [NyxaFakeCraftEntry] = [.header(isRussian ? "ОБЫЧНЫЕ ФЕЙК ПОДАРКИ" : "PLAIN FAKE GIFTS")]
++        var plain: [(Int64, String)] = []
++        for entry in NyxaFakeGifts.entries(accountPeerId: accountPeerId) {
++            if case let .generic(gift) = entry.gift {
++                plain.append((entry.id, gift.title ?? "Gift"))
++            }
++        }
++        if plain.isEmpty {
++            entries.append(.empty(isRussian ? "Обычных фейк подарков нет. Сначала возьмите подарок в разделе «Fake подарки»." : "There are no plain fake gifts. Take one in Fake Gifts first."))
++        } else {
++            for (index, item) in plain.enumerated() {
++                entries.append(.gift(Int32(index), item.0, item.1, isRussian ? "Скрафтить" : "Craft"))
++            }
++        }
++        entries.append(.footer(isRussian ? "Крафт делает из обычного подарка коллекционный: модель, узор, фон и номер берутся из «Подкрута подарков», если он включён. Всё остаётся на этом устройстве." : "Craft turns a plain gift into a collectible: the model, pattern, backdrop and number come from Gift Rig when it's on. Everything stays on this device."))
++        let controllerState = ItemListControllerState(presentationData: ItemListPresentationData(presentationData), title: .text(isRussian ? "Фейк крафт" : "Fake Craft"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        let listState = ItemListNodeState(presentationData: ItemListPresentationData(presentationData), entries: entries, style: .blocks, animateChanges: true)
++        return (controllerState, (listState, arguments))
++    }
++
++    let controller = ItemListController(context: context, state: signal)
++    presentImpl = { [weak controller] c in
++        controller?.present(c, in: .window(.root))
++    }
++    return controller
++}
 diff --git a/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoAvatarTransformContainerNode.swift b/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoAvatarTransformContainerNode.swift
 index 89dc09d0..1864ec51 100644
 --- a/submodules/TelegramUI/Components/PeerInfo/PeerInfoScreen/Sources/PeerInfoAvatarTransformContainerNode.swift
@@ -87350,52 +87721,6 @@ index a4873696..42ff9d03 100644
          if abs(tonState.balance.value) > 0 {
              let balanceText: NSAttributedString
              if abs(tonState.balance.value) > 0 {
-diff --git a/submodules/TelegramUI/Components/PeerInfo/PeerInfoVisualMediaPaneNode/Sources/GiftsListView.swift b/submodules/TelegramUI/Components/PeerInfo/PeerInfoVisualMediaPaneNode/Sources/GiftsListView.swift
-index aa96cd0f..02b5c839 100644
---- a/submodules/TelegramUI/Components/PeerInfo/PeerInfoVisualMediaPaneNode/Sources/GiftsListView.swift
-+++ b/submodules/TelegramUI/Components/PeerInfo/PeerInfoVisualMediaPaneNode/Sources/GiftsListView.swift
-@@ -703,6 +703,7 @@ final class GiftsListView: UIView {
-                     containerSize: starsOptionSize
-                 )
-                 if let itemView = visibleItem.view {
-+                    nyxaUpdateFakeGiftMarking(view: itemView, size: starsOptionSize, isFake: NyxaFakeGifts.isFake(product.reference))
-                     if itemView.superview == nil {
-                         self.addSubview(itemView)
-                         
-@@ -1263,3 +1264,33 @@ private final class ReorderGestureRecognizer: UIGestureRecognizer {
-         }
-     }
- }
-+
-+private let nyxaFakeBadgeTag = 0x4E59
-+
-+// the logo keeps fake gifts from passing for real ones in screenshots
-+private func nyxaUpdateFakeGiftMarking(view: UIView, size: CGSize, isFake: Bool) {
-+    let existing = view.viewWithTag(nyxaFakeBadgeTag)
-+    if isFake {
-+        let badge: UIView
-+        if let existing {
-+            badge = existing
-+        } else {
-+            badge = UIView()
-+            badge.tag = nyxaFakeBadgeTag
-+            badge.backgroundColor = UIColor(white: 0.0, alpha: 0.55)
-+            badge.layer.cornerRadius = 6.5
-+            badge.clipsToBounds = true
-+            badge.isUserInteractionEnabled = false
-+            badge.autoresizingMask = [.flexibleLeftMargin, .flexibleTopMargin]
-+            let logo = UIImageView(image: UIImage(named: "NyxaIntroLogo"))
-+            logo.contentMode = .scaleAspectFit
-+            logo.frame = CGRect(x: 3.0, y: 2.5, width: 7.0, height: 8.0)
-+            badge.addSubview(logo)
-+            view.addSubview(badge)
-+        }
-+        badge.frame = CGRect(x: size.width - 13.0 - 6.0, y: size.height - 13.0 - 6.0, width: 13.0, height: 13.0)
-+        view.bringSubviewToFront(badge)
-+    } else {
-+        existing?.removeFromSuperview()
-+    }
-+}
 diff --git a/submodules/TelegramUI/Components/Settings/PeerNameColorScreen/Sources/UserApperanceScreen.swift b/submodules/TelegramUI/Components/Settings/PeerNameColorScreen/Sources/UserApperanceScreen.swift
 index e8a41437..5479d995 100644
 --- a/submodules/TelegramUI/Components/Settings/PeerNameColorScreen/Sources/UserApperanceScreen.swift
@@ -88269,3 +88594,112 @@ index 38152a40..395341a2 100644
      let translationConfiguration = TranslationConfiguration.with(appConfiguration: context.currentAppConfiguration.with { $0 })
      var chatTranslationAvailable = true
      switch translationConfiguration.auto {
+diff --git a/submodules/TelegramCore/Sources/Nyxa/NyxaGiftRig.swift b/submodules/TelegramCore/Sources/Nyxa/NyxaGiftRig.swift
+new file mode 100644
+index 00000000..00000000
+--- /dev/null
++++ b/submodules/TelegramCore/Sources/Nyxa/NyxaGiftRig.swift
+@@ -0,0 +1,103 @@
++import Foundation
++
++// Fake gifts normally roll the dice: an upgrade picks a model, a pattern, a backdrop and a number, and an incoming
++// gift picks an NFT from the set. With the rig on, Settings decides instead.
++public enum NyxaGiftRig {
++    public static let didChangeNotification = Notification.Name("NyxaGiftRigDidChange")
++    // how many variants the model, pattern and backdrop rows cycle through
++    public static let maximumVariant: Int32 = 12
++    public static let numberOptions: [Int32] = [0, 1, 7, 42, 100, 1000, 10000]
++
++    public static var enabled: Bool {
++        get {
++            return UserDefaults.standard.bool(forKey: "nyxa.giftRig.enabled")
++        }
++        set {
++            UserDefaults.standard.set(newValue, forKey: "nyxa.giftRig.enabled")
++            NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        }
++    }
++
++    // 0 means "roll the dice"; anything else is the position in the list of variants the Upgrade screen offers
++    public static var model: Int32 {
++        get {
++            return variant("nyxa.giftRig.model")
++        }
++        set {
++            setVariant(newValue, key: "nyxa.giftRig.model")
++        }
++    }
++
++    public static var pattern: Int32 {
++        get {
++            return variant("nyxa.giftRig.pattern")
++        }
++        set {
++            setVariant(newValue, key: "nyxa.giftRig.pattern")
++        }
++    }
++
++    public static var backdrop: Int32 {
++        get {
++            return variant("nyxa.giftRig.backdrop")
++        }
++        set {
++            setVariant(newValue, key: "nyxa.giftRig.backdrop")
++        }
++    }
++
++    // 0 means "any number within the collection"
++    public static var number: Int32 {
++        get {
++            return max(0, Int32(UserDefaults.standard.integer(forKey: "nyxa.giftRig.number")))
++        }
++        set {
++            UserDefaults.standard.set(Int(max(0, newValue)), forKey: "nyxa.giftRig.number")
++            NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        }
++    }
++
++    // incoming gifts: the first NFT of the set arrives every time instead of a random one
++    public static var firstNFTOnly: Bool {
++        get {
++            return UserDefaults.standard.bool(forKey: "nyxa.giftRig.firstNFT")
++        }
++        set {
++            UserDefaults.standard.set(newValue, forKey: "nyxa.giftRig.firstNFT")
++            NotificationCenter.default.post(name: didChangeNotification, object: nil)
++        }
++    }
++
++    private static func variant(_ key: String) -> Int32 {
++        return max(0, min(maximumVariant, Int32(UserDefaults.standard.integer(forKey: key))))
++    }
++
++    private static func setVariant(_ value: Int32, key: String) {
++        UserDefaults.standard.set(Int(max(0, min(maximumVariant, value))), forKey: key)
++        NotificationCenter.default.post(name: didChangeNotification, object: nil)
++    }
++
++    // The rigged variant when the rig is on, a random one otherwise
++    public static func pick<T>(_ items: [T], index: Int32) -> T? {
++        guard !items.isEmpty else {
++            return nil
++        }
++        if enabled && index > 0 {
++            return items[(Int(index) - 1) % items.count]
++        }
++        return items.randomElement()
++    }
++
++    public static func giftNumber(supply: Int32) -> Int32 {
++        let maximum = max(1, supply)
++        if enabled && number > 0 {
++            return min(number, maximum)
++        }
++        return Int32.random(in: 1 ... maximum)
++    }
++
++    public static func nextNumber(after value: Int32) -> Int32 {
++        let index = numberOptions.firstIndex(of: value) ?? 0
++        return numberOptions[(index + 1) % numberOptions.count]
++    }
++}
