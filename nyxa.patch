@@ -81465,7 +81465,7 @@ new file mode 100644
 index 00000000..f29fba62
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/TelegramEngine/Payments/NyxaFakeGiftMessages.swift
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,263 @@
 +import Foundation
 +import Postbox
 +import SwiftSignalKit
@@ -81579,7 +81579,14 @@ index 00000000..f29fba62
 +    let models = attributes.filter { if case .model = $0 { return true } else { return false } }
 +    let patterns = attributes.filter { if case .pattern = $0 { return true } else { return false } }
 +    let backdrops = attributes.filter { if case .backdrop = $0 { return true } else { return false } }
-+    guard let model = NyxaGiftRig.pick(models, index: NyxaGiftRig.model), let pattern = NyxaGiftRig.pick(patterns, index: NyxaGiftRig.pattern), let backdrop = NyxaGiftRig.pick(backdrops, index: NyxaGiftRig.backdrop) else {
++    let backdrop: StarGift.UniqueGift.Attribute?
++    if NyxaGiftRig.enabled, NyxaGiftRig.backdrop > 0 {
++        backdrop = NyxaGiftRig.pick(backdrops, index: NyxaGiftRig.backdrop)
++    } else {
++        // every upgrade lands on the black backdrop of the collection
++        backdrop = NyxaGiftRig.darkestBackdrop(backdrops)
++    }
++    guard let model = NyxaGiftRig.pick(models, index: NyxaGiftRig.model), let pattern = NyxaGiftRig.pick(patterns, index: NyxaGiftRig.pattern), let backdrop = backdrop else {
 +        return nil
 +    }
 +    var uniqueAttributes: [StarGift.UniqueGift.Attribute] = [model, pattern, backdrop]
@@ -89104,7 +89111,7 @@ new file mode 100644
 index 00000000..00000000
 --- /dev/null
 +++ b/submodules/TelegramCore/Sources/Nyxa/NyxaGiftRig.swift
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,127 @@
 +import Foundation
 +
 +// Fake gifts normally roll the dice: an upgrade picks a model, a pattern, a backdrop and a number, and an incoming
@@ -89207,4 +89214,42 @@ index 00000000..00000000
 +        let index = numberOptions.firstIndex(of: value) ?? 0
 +        return numberOptions[(index + 1) % numberOptions.count]
 +    }
++    // The darkest backdrop of a collection, which is the black one: every upgrade lands on it
++    public static func darkestBackdrop(_ backdrops: [StarGift.UniqueGift.Attribute]) -> StarGift.UniqueGift.Attribute? {
++        var best: StarGift.UniqueGift.Attribute?
++        var bestLuminance = Int.max
++        for attribute in backdrops {
++            guard case let .backdrop(_, _, inner, outer, _, _, _) = attribute else {
++                continue
++            }
++            let luminance = luminance(of: inner) + luminance(of: outer)
++            if luminance < bestLuminance {
++                bestLuminance = luminance
++                best = attribute
++            }
++        }
++        return best
++    }
++
++    private static func luminance(of color: Int32) -> Int {
++        let value = UInt32(bitPattern: color) & 0xffffff
++        let red = Int((value >> 16) & 0xff)
++        let green = Int((value >> 8) & 0xff)
++        let blue = Int(value & 0xff)
++        return 299 * red + 587 * green + 114 * blue
++    }
 +}
+diff --git a/submodules/TelegramUI/Components/Gifts/GiftOptionsScreen/Sources/GiftOptionsScreen.swift b/submodules/TelegramUI/Components/Gifts/GiftOptionsScreen/Sources/GiftOptionsScreen.swift
+--- a/submodules/TelegramUI/Components/Gifts/GiftOptionsScreen/Sources/GiftOptionsScreen.swift
++++ b/submodules/TelegramUI/Components/Gifts/GiftOptionsScreen/Sources/GiftOptionsScreen.swift
+@@ -466,7 +466,9 @@
+                             }
+                         }))
+                     } else {
+-                        if let availability = gift.availability, availability.remains == 0 || gift.perUserLimit?.remains == 0 || component.peerId.namespace == Namespaces.Peer.CloudChannel {
++                        // buying for yourself is fake, so a sold out gift can still be opened and taken
++                        let nyxaSoldOutBypass = NyxaFakeGifts.enabled && component.peerId == component.context.account.peerId && (gift.availability?.remains == 0 || gift.perUserLimit?.remains == 0)
++                        if !nyxaSoldOutBypass, let availability = gift.availability, availability.remains == 0 || gift.perUserLimit?.remains == 0 || component.peerId.namespace == Namespaces.Peer.CloudChannel {
+                             if availability.resale > 0 {
+                                 let storeController = component.context.sharedContext.makeGiftStoreController(
+                                     context: component.context,
